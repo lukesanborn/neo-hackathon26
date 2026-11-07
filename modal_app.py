@@ -153,7 +153,7 @@ def _pilot(exp_id: str, config_name: str, steps: int, aux_weight: float) -> dict
     rep["config_name"] = config_name
     _write(out, f"{config_name}.json", rep)
     vol.commit()
-    return rep
+    return json.loads(json.dumps(rep, default=str))  # plain types only: local client has no torch
 
 
 @gpu_function(image=hopper_image, gpu=TRAIN_GPU, volumes={VOL_PATH: vol}, memory=65536, timeout=3600)
@@ -181,7 +181,7 @@ def _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag) -> dict:
     run_dir = os.path.join(exp_dir(exp_id), "runs", f"{method}_s{seed}_{tag}")
     if os.path.exists(os.path.join(run_dir, "metrics.json")):
         raise FileExistsError(f"{run_dir} already completed; runs are immutable — use a new tag")
-    return run_training(ds, CKPT, cfg, run_dir, commit=vol.commit)
+    return json.loads(json.dumps(run_training(ds, CKPT, cfg, run_dir, commit=vol.commit), default=str))
 
 
 @gpu_function(image=hopper_image, gpu=TRAIN_GPU, volumes={VOL_PATH: vol}, memory=65536,
