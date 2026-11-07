@@ -220,6 +220,24 @@ Raw output in `diag/results/A10_seeds.txt`. Val recon per seed:
 - Our kidney models are well below the paper so far. The best is `center` at 0.413. The stuck plain-scGPT checkpoint carries no cell-type information (NMI 0.004).
 - **Pending:** the lr 3e-5 checkpoints (A9), including the first *working* kidney scGPT, are needed for the matched JEPA vs scGPT comparison.
 
+## A12. Task 1: PBMC-10K fine-tuning, first runs (Nov 7)
+
+`modal_pbmc.py --stage finetune` + `src/track_a/pbmc_finetune.py`. Paper App. E.2 recipe: 40% mask, 30 epochs, Adam 1e-4 ×0.9/epoch, batch 64, 9:1 split with seed 42. Loss GEP + GEPC + ECS (+1000·JEPA for JEPA checkpoints, same variant). Seed 0. Final epoch scored with the Task 2 metrics. ~17–20 min per run on B300.
+
+| Fine-tuned from | FT objective | AvgBIO | NMI | ARI | ASW | vs zero-shot (A11) |
+|---|---|---|---|---|---|---|
+| kidney JEPA `center` (lr 1e-4) | Cell-JEPA | **0.653** | 0.662 | 0.676 | 0.621 | +0.240 |
+| public `scGPT_human` | scGPT | 0.624 | 0.733 | 0.469 | 0.668 | **−0.085** |
+| kidney JEPA `token` (lr 1e-4) | Cell-JEPA | 0.479 | 0.524 | 0.355 | 0.559 | +0.137 |
+| *(A11)* PCA-50, no model | — | 0.773 | 0.838 | 0.881 | 0.600 | |
+| *(paper)* Cell-JEPA | | 0.783 | 0.776 | 0.847 | 0.726 | |
+| *(paper)* scGPT | | 0.753 | 0.765 | 0.784 | 0.710 | |
+
+- Fine-tuning helps the kidney JEPA checkpoints a lot (`center` 0.41 → 0.65).
+- **Fine-tuning hurts public scGPT** (0.709 → 0.624, mostly ARI). Possible causes: our unsupervised ECS (threshold 0.8) may pull embeddings together; we score the final epoch rather than the best one; or there is a recipe mismatch. The paper's fine-tuned numbers (0.75–0.78) are above all of ours. **Unresolved.**
+- Nothing beats PCA-50 (0.773) yet.
+- Single seed. The matched comparison awaits the lr 3e-5 checkpoints.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.
@@ -235,5 +253,6 @@ Raw output in `diag/results/A10_seeds.txt`. Val recon per seed:
 1. ~~What is the escape rate per objective?~~ Answered in A8: lr 3e-5 fixes plain scGPT 4/4. Still to check: do the JEPA variants also train reliably at lr 3e-5?
 2. ~~Why does the paper's JEPA collapse in the full run but not the short run?~~ Answered in A8: escape is seed-dependent at lr 1e-4, and collapse goes together with failing to escape.
 3. Why do several fine-tunes produce identical, degenerate outputs (A4b)?
+3b. Why does PBMC fine-tuning *lower* public scGPT's clustering (A12)? Check ECS threshold / best-epoch selection.
 4. Metric scale: do we need per-cell metrics to match the paper's numbers?
 5. Is any deep model ever better than linear on the Adamson test split?
