@@ -166,7 +166,9 @@ Launched with `diag/launch_pretrain_lr3e5.py` (call ids in `diag/call_ids_A9.jso
 - Run dirs: `trackA/pretrain/runs/{scgpt_lr3e5, jepa_lr3e5, jepa_lr3e5_token, jepa_lr3e5_center}`
 - Checkpoints: `trackA/checkpoints/<objective>_kidney_<tag>`
 
-*Results pending (~1.5 h).* The A5 `token`/`center` runs at lr 1e-4 keep running as the "paper LR" data point.
+Progress at ~19 min: plain scGPT val recon **17.18 after epoch 1** (better than any lr 1e-4 run). The JEPA runs had not logged an epoch yet.
+
+The A5 `token`/`center` runs at lr 1e-4 **finished**: best val recon 18.07 (`token`) / 18.12 (`center`), at epoch 4. Teacher spread stayed at 0.032 / 0.042 (no collapse). Checkpoints: `trackA/checkpoints/jepa_kidney_v1_token`, `jepa_kidney_v1_center`.
 
 ## A10. Seed check: JEPA at lr 3e-5, and Xiong-style warmup (Nov 7, running)
 
