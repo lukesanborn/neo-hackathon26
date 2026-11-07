@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Adamson knockdown response prediction — Track B demo</title>
+<style>
+.viz-root {
+  color-scheme: light;
+  --surface-0: #f4f3ef; --surface-1: #fcfcfb; --border: #e0dfda; --grid: #ebeae5;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #7a7974;
+  --obs: #0b0b0b; --accent-bg: #eef4fc;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --surface-0: #121211; --surface-1: #1a1a19; --border: #33332f; --grid: #2a2a27;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #94938a;
+    --obs: #f0efec; --accent-bg: #1c2633;
+  }
+}
+:root[data-theme="dark"] .viz-root {
+  color-scheme: dark;
+  --surface-0: #121211; --surface-1: #1a1a19; --border: #33332f; --grid: #2a2a27;
+  --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #94938a;
+  --obs: #f0efec; --accent-bg: #1c2633;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.viz-root { background: var(--surface-0); color: var(--text-primary); min-height: 100vh; padding: 20px 24px 40px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 0 0 2px; }
+.sub { color: var(--text-secondary); margin: 0 0 12px; font-size: 13px; }
+.claim { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin: 10px 0 16px; }
+.filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 16px; }
+.filters label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+select, button { font: inherit; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+button { cursor: pointer; }
+button.primary { border-color: var(--text-secondary); font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 16px; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; overflow: hidden; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--text-secondary); margin: 6px 0; }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--c); margin-right: 5px; vertical-align: -1px; }
+.legend span.obs::before { background: none; border: 2px solid var(--obs); width: 8px; height: 8px; }
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+svg text { fill: var(--text-secondary); font-size: 11px; }
+.axis line, .axis path { stroke: var(--text-muted); }
+.gridline { stroke: var(--grid); }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--text-secondary); font-weight: 600; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+#tip { position: fixed; pointer-events: none; background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.15); display: none; z-index: 10; white-space: nowrap; }
+.muted { color: var(--text-muted); }
+.hidden-note { color: var(--text-muted); font-style: italic; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="viz-root">
+  <h1>Predicting knockdown responses in K562 (Adamson) — held-out interventions</h1>
+  <p class="sub" id="meta"></p>
+  <div class="claim" id="claim"></div>
+
+  <div class="filters">
+    <label>Held-out intervention <select id="cond"></select></label>
+    <label>Scatter method <select id="method"></select></label>
+    <button class="primary" id="reveal">Reveal observed response</button>
+    <button id="theme" title="Toggle light/dark">Theme</button>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Predicted vs observed change from control</h2>
+      <p class="sub" id="scatterSub">All measured genes for the selected intervention.</p>
+      <div id="scatter"></div>
+    </div>
+    <div class="card">
+      <h2>Top changed genes</h2>
+      <p class="sub">20 genes with the largest observed change; the observed value is shown after reveal.</p>
+      <div class="legend" id="geneLegend"></div>
+      <div id="genes"></div>
+    </div>
+    <div class="card">
+      <h2>Error per held-out intervention</h2>
+      <p class="sub">Delta RMSE (lower is better), seed-averaged. Click a row to select it.</p>
+      <div class="legend" id="perLegend"></div>
+      <div id="perint"></div>
+    </div>
+    <div class="card">
+      <h2>Aggregate results</h2>
+      <p class="sub">Equal weight per intervention; 95% bootstrap CI over interventions (conditional on the fixed split).</p>
+      <div id="aggBars"></div>
+      <div id="aggTable"></div>
+    </div>
+    <div class="card">
+      <h2>Selected intervention — metrics (table view)</h2>
+      <div id="condTable"></div>
+    </div>
+  </div>
+</div>
+<div id="tip"></div>
+<script>
+const D = /*__DEMO_DATA__*/null;
+const $ = (id) => document.getElementById(id);
+const NS = "http://www.w3.org/2000/svg";
+const dark = () => document.documentElement.dataset.theme === "dark" ||
+  (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+const col = (m) => D.colors[m][dark() ? 1 : 0];
+const fmt = (v, n = 4) => v === null || v === undefined || Number.isNaN(v) ? "undefined" : (+v).toFixed(n);
+const COMPARE = D.methods.filter((m) => ["jepa", "scgpt", "linear"].includes(m)); // <=3 overlapping series
+let state = { cond: D.typical, method: D.methods.includes("jepa") ? "jepa" : D.methods[0], revealed: false };
+
+function el(tag, attrs = {}, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const tip = $("tip");
+function showTip(ev, html) { tip.innerHTML = html; tip.style.display = "block"; tip.style.left = ev.clientX + 14 + "px"; tip.style.top = ev.clientY + 12 + "px"; }
+function hideTip() { tip.style.display = "none"; }
+function scale(d0, d1, r0, r1) { const k = (r1 - r0) / (d1 - d0 || 1); return (v) => r0 + (v - d0) * k; }
+function ticks(lo, hi, n = 5) {
+  const step = Math.pow(10, Math.floor(Math.log10((hi - lo) / n || 1)));
+  const s = [1, 2, 5, 10].map((m) => m * step).find((x) => (hi - lo) / x <= n) || step * 10;
+  const out = []; for (let v = Math.ceil(lo / s) * s; v <= hi + 1e-12; v += s) out.push(+v.toFixed(10)); return out;
+}
+const condItem = () => D.conditions.find((c) => c.condition === state.cond);
+
+function legend(target, methods, withObs) {
+  target.innerHTML = methods.map((m) => `<span style="--c:${col(m)}">${D.labels[m]}</span>`).join("") +
+    (withObs ? `<span class="obs">Observed${state.revealed ? "" : " (hidden)"}</span>` : "");
+}
+
+function drawScatter() {
+  const c = condItem(), host = $("scatter"); host.innerHTML = "";
+  const W = 460, H = 360, m = { l: 52, r: 12, t: 10, b: 40 };
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Predicted versus observed change scatter" }, host);
+  const pred = c.pred_all[state.method], obs = c.obs_all;
+  if (!state.revealed) {
+    $("scatterSub").innerHTML = `<span class="hidden-note">Reveal the observed response to compare. Showing the predicted change distribution for ${D.labels[state.method]}.</span>`;
+  } else {
+    $("scatterSub").textContent = `All ${obs.length} measured genes · ${D.labels[state.method]} · delta Pearson ${fmt(c.metrics[state.method].delta_pearson, 3)}`;
+  }
+  const xs = state.revealed ? obs : pred.map((_, i) => i);
+  const lim = Math.max(...pred.map(Math.abs), ...(state.revealed ? obs.map(Math.abs) : [0.05]));
+  const x = state.revealed ? scale(-lim, lim, m.l, W - m.r) : scale(0, pred.length, m.l, W - m.r);
+  const y = scale(-lim, lim, H - m.b, m.t);
+  for (const t of ticks(-lim, lim)) {
+    el("line", { x1: m.l, x2: W - m.r, y1: y(t), y2: y(t), class: "gridline" }, svg);
+    el("text", { x: m.l - 6, y: y(t) + 4, "text-anchor": "end" }, svg).textContent = t;
+    if (state.revealed) {
+      el("line", { y1: m.t, y2: H - m.b, x1: x(t), x2: x(t), class: "gridline" }, svg);
+      el("text", { x: x(t), y: H - m.b + 16, "text-anchor": "middle" }, svg).textContent = t;
+    }
+  }
+  if (state.revealed) el("line", { x1: x(-lim), y1: y(-lim), x2: x(lim), y2: y(lim), stroke: "var(--text-muted)", "stroke-dasharray": "4 4" }, svg);
+  el("text", { x: (m.l + W - m.r) / 2, y: H - 6, "text-anchor": "middle" }, svg).textContent = state.revealed ? "Observed change from control (log-expr.)" : "Gene (dataset order)";
+  el("text", { x: 12, y: (m.t + H - m.b) / 2, "text-anchor": "middle", transform: `rotate(-90 12 ${(m.t + H - m.b) / 2})` }, svg).textContent = "Predicted change";
+  const g = el("g", {}, svg);
+  pred.forEach((p, i) => {
+    el("circle", { cx: x(xs[i]), cy: y(p), r: 2.4, fill: col(state.method), "fill-opacity": 0.55 }, g);
+  });
+  // hover: nearest point (hit area = whole plot)
+  const hit = el("rect", { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent" }, svg);
+  hit.addEventListener("mousemove", (ev) => {
+    const r = svg.getBoundingClientRect(), sx = (ev.clientX - r.left) * W / r.width, sy = (ev.clientY - r.top) * H / r.height;
+    let best = -1, bd = 1e9;
+    for (let i = 0; i < pred.length; i++) { const d = (x(xs[i]) - sx) ** 2 + (y(pred[i]) - sy) ** 2; if (d < bd) { bd = d; best = i; } }
+    if (bd > 400) return hideTip();
+    showTip(ev, `<b>${D.gene_names[best]}</b><br>predicted ${fmt(pred[best], 3)}` + (state.revealed ? `<br>observed ${fmt(obs[best], 3)}` : ""));
+  });
+  hit.addEventListener("mouseleave", hideTip);
+}
+
+function drawGenes() {
+  const c = condItem(), host = $("genes"); host.innerHTML = "";
+  legend($("geneLegend"), COMPARE, true);
+  const idx = c.observed.map((v, i) => i).sort((a, b) => Math.abs(c.observed[b]) - Math.abs(c.observed[a])).slice(0, 20);
+  const W = 460, row = 17, m = { l: 92, r: 14, t: 6, b: 30 }, H = m.t + m.b + row * idx.length;
+  const vals = idx.flatMap((i) => [c.observed[i], ...COMPARE.map((mm) => c.pred[mm][i])]);
+  const lim = Math.max(...vals.map(Math.abs)) * 1.05;
+  const x = scale(-lim, lim, m.l, W - m.r);
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Top changed genes" }, host);
+  for (const t of ticks(-lim, lim)) {
+    el("line", { x1: x(t), x2: x(t), y1: m.t, y2: H - m.b, class: "gridline" }, svg);
+    el("text", { x: x(t), y: H - m.b + 14, "text-anchor": "middle" }, svg).textContent = t;
+  }
+  el("line", { x1: x(0), x2: x(0), y1: m.t, y2: H - m.b, stroke: "var(--text-muted)" }, svg);
+  el("text", { x: (m.l + W - m.r) / 2, y: H - 2, "text-anchor": "middle" }, svg).textContent = "Change from control (log-expr.)";
+  idx.forEach((gi, r) => {
+    const cy = m.t + row * r + row / 2;
+    el("text", { x: m.l - 8, y: cy + 4, "text-anchor": "end" }, svg).textContent = c.genes[gi] + (c.de20.includes(c.genes[gi]) ? " •" : "");
+    COMPARE.forEach((mm) => el("circle", { cx: x(c.pred[mm][gi]), cy, r: 4.5, fill: col(mm), stroke: "var(--surface-1)", "stroke-width": 2 }, svg));
+    if (state.revealed) el("circle", { cx: x(c.observed[gi]), cy, r: 5, fill: "none", stroke: "var(--obs)", "stroke-width": 2 }, svg);
+    const hit = el("rect", { x: 0, y: cy - row / 2, width: W, height: row, fill: "transparent" }, svg);
+    hit.addEventListener("mousemove", (ev) => showTip(ev, `<b>${c.genes[gi]}</b>${c.de20.includes(c.genes[gi]) ? " (GEARS DE20)" : ""}<br>` +
+      COMPARE.map((mm) => `<span class="swatch" style="background:${col(mm)}"></span>${D.labels[mm]}: ${fmt(c.pred[mm][gi], 3)}`).join("<br>") +
+      (state.revealed ? `<br>Observed: ${fmt(c.observed[gi], 3)}` : "<br><i>observed hidden</i>")));
+    hit.addEventListener("mouseleave", hideTip);
+  });
+}
+
+function drawPerInt() {
+  const host = $("perint"); host.innerHTML = "";
+  legend($("perLegend"), COMPARE, false);
+  const ref = COMPARE[COMPARE.length - 1] || D.methods[0];
+  const items = [...D.conditions].sort((a, b) => a.metrics[ref].delta_rmse - b.metrics[ref].delta_rmse);
+  const W = 460, row = 16, m = { l: 92, r: 14, t: 6, b: 30 }, H = m.t + m.b + row * items.length;
+  const vals = items.flatMap((it) => COMPARE.map((mm) => it.metrics[mm].delta_rmse));
+  const lo = Math.min(...vals) * 0.95, hi = Math.max(...vals) * 1.03;
+  const x = scale(lo, hi, m.l, W - m.r);
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Per-intervention error" }, host);
+  for (const t of ticks(lo, hi, 4)) {
+    el("line", { x1: x(t), x2: x(t), y1: m.t, y2: H - m.b, class: "gridline" }, svg);
+    el("text", { x: x(t), y: H - m.b + 14, "text-anchor": "middle" }, svg).textContent = t;
+  }
+  el("text", { x: (m.l + W - m.r) / 2, y: H - 2, "text-anchor": "middle" }, svg).textContent = "Delta RMSE";
+  items.forEach((it, r) => {
+    const cy = m.t + row * r + row / 2;
+    if (it.condition === state.cond) el("rect", { x: 0, y: cy - row / 2, width: W, height: row, fill: "var(--accent-bg)" }, svg);
+    let label = it.target + (it.condition === D.typical ? " (typical)" : it.condition === D.failure ? " (worst)" : "");
+    el("text", { x: m.l - 8, y: cy + 4, "text-anchor": "end" }, svg).textContent = label;
+    COMPARE.forEach((mm) => el("circle", { cx: x(it.metrics[mm].delta_rmse), cy, r: 4.5, fill: col(mm), stroke: "var(--surface-1)", "stroke-width": 2 }, svg));
+    const hit = el("rect", { x: 0, y: cy - row / 2, width: W, height: row, fill: "transparent", style: "cursor:pointer" }, svg);
+    hit.addEventListener("mousemove", (ev) => showTip(ev, `<b>${it.target}</b> · ${it.n_cells} cells<br>` +
+      COMPARE.map((mm) => `<span class="swatch" style="background:${col(mm)}"></span>${D.labels[mm]}: ${fmt(it.metrics[mm].delta_rmse)}`).join("<br>")));
+    hit.addEventListener("mouseleave", hideTip);
+    hit.addEventListener("click", () => { state.cond = it.condition; $("cond").value = it.condition; render(); });
+  });
+}
+
+function drawAgg() {
+  const host = $("aggBars"); host.innerHTML = "";
+  const S = D.summary, W = 460, row = 26, m = { l: 150, r: 60, t: 4, b: 26 }, H = m.t + m.b + row * S.length;
+  const hi = Math.max(...S.map((r) => r.delta_rmse_ci95[1])) * 1.05;
+  const x = scale(0, hi, m.l, W - m.r);
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Aggregate delta RMSE" }, host);
+  for (const t of ticks(0, hi, 4)) {
+    el("line", { x1: x(t), x2: x(t), y1: m.t, y2: H - m.b, class: "gridline" }, svg);
+    el("text", { x: x(t), y: H - m.b + 14, "text-anchor": "middle" }, svg).textContent = t;
+  }
+  S.forEach((r, i) => {
+    const cy = m.t + row * i + row / 2;
+    el("text", { x: m.l - 8, y: cy + 4, "text-anchor": "end" }, svg).textContent = r.label;
+    el("rect", { x: x(0), y: cy - 7, width: Math.max(0, x(r.delta_rmse) - x(0)), height: 14, rx: 4, fill: col(r.method) }, svg);
+    el("line", { x1: x(r.delta_rmse_ci95[0]), x2: x(r.delta_rmse_ci95[1]), y1: cy, y2: cy, stroke: "var(--text-primary)", "stroke-width": 1.5 }, svg);
+    el("text", { x: x(r.delta_rmse_ci95[1]) + 6, y: cy + 4 }, svg).textContent = fmt(r.delta_rmse);
+    const hit = el("rect", { x: 0, y: cy - row / 2, width: W, height: row, fill: "transparent" }, svg);
+    hit.addEventListener("mousemove", (ev) => showTip(ev, `<b>${r.label}</b> (${r.n_seeds} run${r.n_seeds > 1 ? "s" : ""})<br>delta RMSE ${fmt(r.delta_rmse)}<br>95% CI [${fmt(r.delta_rmse_ci95[0])}, ${fmt(r.delta_rmse_ci95[1])}]`));
+    hit.addEventListener("mouseleave", hideTip);
+  });
+  el("text", { x: (m.l + W - m.r) / 2, y: H - 2, "text-anchor": "middle" }, svg).textContent = "Mean per-intervention delta RMSE (lower is better)";
+  const n = D.conditions.length;
+  $("aggTable").innerHTML = `<table><thead><tr><th>Method</th><th>delta RMSE</th><th>delta Pearson</th><th>DE20 RMSE</th><th>DE20 Pearson</th><th>DE20 direction</th></tr></thead><tbody>` +
+    S.map((r) => `<tr><td><span class="swatch" style="background:${col(r.method)}"></span>${r.label}</td><td>${fmt(r.delta_rmse)}</td><td>${fmt(r.delta_pearson, 3)} <span class="muted">(${r.delta_pearson_n}/${n})</span></td><td>${fmt(r.de20_delta_rmse)}</td><td>${fmt(r.de20_delta_pearson, 3)}</td><td>${fmt(r.de20_direction_acc, 2)}</td></tr>`).join("") + "</tbody></table>";
+}
+
+function drawCondTable() {
+  const c = condItem();
+  const keys = [["delta_rmse", "delta RMSE"], ["delta_pearson", "delta Pearson"], ["de20_delta_rmse", "DE20 RMSE"], ["de20_delta_pearson", "DE20 Pearson"], ["de20_direction_acc", "DE20 dir."], ["abs_pearson", "abs Pearson"]];
+  $("condTable").innerHTML = `<p class="sub">${c.target} knockdown · ${c.n_cells} measured cells · never seen in training</p><table><thead><tr><th>Method</th>${keys.map((k) => `<th>${k[1]}</th>`).join("")}</tr></thead><tbody>` +
+    D.methods.map((m) => `<tr><td><span class="swatch" style="background:${col(m)}"></span>${D.labels[m]}</td>${keys.map((k) => `<td>${state.revealed ? fmt(c.metrics[m][k[0]], 3) : "—"}</td>`).join("")}</tr>`).join("") +
+    `</tbody></table>${state.revealed ? "" : '<p class="hidden-note">Scores need the observed response — reveal to show.</p>'}`;
+}
+
+function render() { drawScatter(); drawGenes(); drawPerInt(); drawAgg(); drawCondTable(); }
+
+function init() {
+  const nRuns = D.run_status.filter((r) => r.status === "completed").length;
+  $("meta").textContent = `Track B (our JEPA adaptation of public scGPT; not a Cell-JEPA reproduction) · split ${D.split_hash} · ${D.conditions.length} held-out test interventions · ${nRuns} completed model runs`;
+  $("claim").innerHTML = `<b>What the measurements support:</b> ${D.claim.text}`;
+  $("cond").innerHTML = D.conditions.map((c) => `<option value="${c.condition}">${c.target}${c.condition === D.typical ? " — typical" : c.condition === D.failure ? " — worst case" : ""}</option>`).join("");
+  $("cond").value = state.cond;
+  $("method").innerHTML = D.methods.map((m) => `<option value="${m}">${D.labels[m]}</option>`).join("");
+  $("method").value = state.method;
+  $("cond").onchange = (e) => { state.cond = e.target.value; state.revealed = false; $("reveal").textContent = "Reveal observed response"; render(); };
+  $("method").onchange = (e) => { state.method = e.target.value; render(); };
+  $("reveal").onclick = () => { state.revealed = !state.revealed; $("reveal").textContent = state.revealed ? "Hide observed response" : "Reveal observed response"; render(); };
+  $("theme").onclick = () => { document.documentElement.dataset.theme = dark() ? "light" : "dark"; render(); };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+  render();
+}
+init();
+</script>
+</body>
+</html>
