@@ -73,7 +73,8 @@ def _torch(stack: str) -> list[str]:
     return pkgs
 
 
-def build_image(stack: str = "hopper") -> modal.Image:
+def build_image(stack: str = "hopper", extra_pip: tuple = ()) -> modal.Image:
+    """extra_pip: additional pinned packages (e.g. leidenalg for the PBMC tasks); empty = unchanged image."""
     p = PINNED[stack]
     img = (
         modal.Image.debian_slim(python_version=PYTHON_VERSION)
@@ -97,6 +98,8 @@ def build_image(stack: str = "hopper") -> modal.Image:
             f"scgpt=={PINNED['scgpt']}", extra_options="--no-deps --ignore-requires-python"
         ).add_local_dir(SHIM_DIR, "/opt/torchtext_shim", copy=True)
         env = {**ENV, "JEPA_STACK": "blackwell", "PYTHONPATH": "/opt/torchtext_shim"}
+    if extra_pip:
+        img = img.pip_install(*extra_pip)
     # add_local_python_source ships only .py files; the demo template is mounted separately
     return (img.env({**env, "JEPA_DEMO_TEMPLATE": "/opt/demo/demo_template.html"})
             .add_local_python_source("src", "environment")

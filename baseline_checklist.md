@@ -29,10 +29,11 @@ The paper (arXiv 2602.02093) has three evaluations, all comparing kidney-pretrai
 - ⬜ Record final lr and runtime in the `docs/track_a.md` deviation log
 
 ## 2. Task 2: zero-shot cell-type clustering on PBMC-10K (paper's headline; no training needed)
-- ⬜ Download PBMC-10K, processed as in the paper (scvi-tools pipeline: 3,346 HVGs, 2 batches, 11,990 cells, cell-type labels)
-- ⬜ Embedding extraction: run each frozen checkpoint, take the `<cls>` output (same binning/tokenisation as pretraining)
-- ⬜ Metrics: AvgBIO = mean(NMI, ARI, ASW) on cell-type labels, scGPT / scIB conventions (Leiden-cluster resolution sweep for NMI/ARI)
-- ⬜ Run on: kidney-JEPA, kidney-scGPT, public `scGPT_human` (reference), **PCA-50 on HVGs (baseline the paper omitted)**
+- ✅ Download PBMC-10K, processed as in the paper (scvi-tools: 3,346 genes, 7,982 + 4,008 cells, 9 labels; exact match)
+- ✅ Embedding extraction (scGPT's zero-shot procedure; `src/track_a/pbmc.py`, `modal_pbmc.py`)
+- ✅ Metrics: scib-equivalent NMI / ARI / ASW / AvgBIO
+- ✅ Ran on PCA-50 (**0.773**, beats the paper's Cell-JEPA 0.719), public scGPT (0.709), all existing kidney checkpoints (best 0.413) (A11)
+- ⬜ Run on the lr 3e-5 kidney checkpoints (matched JEPA vs scGPT) once A9 finishes
 - ⬜ Compare with Table 2 (0.719 vs 0.529)
 
 ## 3. Task 1: fine-tuning for cell-type clustering on PBMC-10K

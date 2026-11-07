@@ -194,6 +194,32 @@ Raw output in `diag/results/A10_seeds.txt`. Val recon per seed:
 
 ---
 
+## A11. Task 2: zero-shot PBMC-10K cell-type clustering (Nov 7)
+
+`modal_pbmc.py` + `src/track_a/pbmc.py`.
+- **Data:** scvi-tools 1.1.6 `pbmc_dataset`. It matches the paper exactly: **11,990 cells (7,982 + 4,008), 3,346 genes**, 9 labels; ~458 expressed genes per cell.
+- **Embedding:** scGPT's own zero-shot procedure. Nonzero genes in the vocab, up to 1,200; per-cell bins 1–50; `<cls>` output, L2-normalised. The `<cls>` value follows each checkpoint's convention (kidney 0, scGPT_human −2).
+- **Metrics:** scib-equivalent. NMI/ARI at the Leiden resolution (0.1–2.0) that maximises NMI; ASW = (silhouette + 1)/2; AvgBIO = their mean. Higher is better.
+
+| Embedding | AvgBIO | NMI | ARI | ASW |
+|---|---|---|---|---|
+| **PCA-50 (log1p, no model; the paper has no such baseline)** | **0.773** | 0.838 | 0.881 | 0.600 |
+| public `scGPT_human` (33M cells) | 0.709 | 0.799 | 0.699 | 0.627 |
+| kidney JEPA `center`, lr 1e-4, full 4 ep (A5) | 0.413 | 0.459 | 0.266 | 0.514 |
+| kidney JEPA `token`, lr 1e-4, full 4 ep (A5) | 0.342 | 0.378 | 0.144 | 0.505 |
+| kidney JEPA `faithful`, short 4.5k steps (A3) | 0.241 | 0.180 | 0.122 | 0.421 |
+| kidney JEPA `token`, short (A3) | 0.220 | 0.142 | 0.040 | 0.478 |
+| kidney JEPA `center`, short (A3) | 0.188 | 0.086 | 0.043 | 0.435 |
+| kidney plain scGPT, short, stuck (A3) | 0.167 | 0.004 | 0.001 | 0.496 |
+| kidney JEPA `vicreg`, short (A3) | 0.068 | 0.063 | 0.003 | 0.137 |
+| *(paper)* Cell-JEPA, kidney | 0.719 | 0.769 | 0.808 | 0.581 |
+| *(paper)* scGPT, kidney | 0.529 | 0.559 | 0.495 | 0.533 |
+
+- **PCA beats the paper's Cell-JEPA** (0.773 vs 0.719) and our public scGPT (0.709). Our PCA number agrees with non-deep baselines in the scGPT paper (~0.72–0.78, as reported by the experiment agent; not verified), which is a sanity check on our metric code.
+- Our public scGPT (0.709) is far above the paper's *kidney* scGPT (0.529). That is expected: different pretraining data.
+- Our kidney models are well below the paper so far. The best is `center` at 0.413. The stuck plain-scGPT checkpoint carries no cell-type information (NMI 0.004).
+- **Pending:** the lr 3e-5 checkpoints (A9), including the first *working* kidney scGPT, are needed for the matched JEPA vs scGPT comparison.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.
@@ -202,6 +228,7 @@ Raw output in `diag/results/A10_seeds.txt`. Val recon per seed:
   - Masked-modelling matrix completion shows the same pattern (arXiv 2410.22244).
   - BERT's sudden drops coincide with attention heads acquiring structure (Chen et al., arXiv 2309.07311).
 - **Post-norm transformers need warmup; pre-norm trains stably without it** (Xiong et al., ICML 2020, arXiv 2002.04745).
+- **Public scGPT_human was itself pretrained with a 10,000-step LR warmup** (`warmup_ratio_or_step: 10000` in its args.json; lr 1e-4, decay 0.99 per 100 steps). Cell-JEPA's appendix does not mention warmup. Our backup fix (warmup at lr 1e-4) is what scGPT's authors did.
 - **Hypothesis tested in A8:** "a JEPA term that rewards distinct cell representations helps escape the plateau." **Partly true:** at lr 1e-4, JEPA escapes 3/4 vs 0/4 for plain scGPT. But lowering the LR fixes plain scGPT 4/4, so it is not a JEPA-specific win.
 
 ## Open questions
