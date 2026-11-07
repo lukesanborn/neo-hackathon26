@@ -249,6 +249,23 @@ Raw output in `diag/results/A10_seeds.txt`. Val recon per seed:
 - Nothing beats PCA-50 (0.773) yet.
 - Single seed. The matched comparison awaits the lr 3e-5 checkpoints.
 
+## A13. Why did PBMC fine-tuning lower public scGPT? (Nov 7)
+
+`diag/launch_ecs_check.py`. Public `scGPT_human` → scGPT fine-tune (GEP + GEPC + ECS), seed 0, scored every 5 epochs. Raw output in `diag/results/A13_ecs_check.txt`.
+
+| Variant | Ep 5 | Ep 10 | Ep 15 | Ep 20 | Ep 25 | Final (30) |
+|---|---|---|---|---|---|---|
+| same recipe as A12 (re-run) | 0.571 | 0.618 | 0.623 | 0.625 | 0.689 | **0.691** |
+| ECS off | 0.567 | 0.616 | 0.613 | 0.628 | 0.693 | **0.684** |
+| ECS threshold 0.3 | 0.564 | 0.606 | 0.678 | 0.685 | 0.623 | **0.680** |
+| *(A12)* same recipe, same seed | | | | | | 0.624 |
+| *(A11)* zero-shot, no fine-tune | | | | | | 0.709 |
+
+- **Run-to-run noise is about ±0.07 AvgBIO.** The identical recipe and seed gave 0.624 (A12) and 0.691 (here); GPU kernels are not bitwise deterministic. Even within one run, the score moves by up to ~0.06 between epochs (0.685 → 0.623 in the ECS-0.3 run). ARI is the most volatile component.
+- **ECS is not the cause.** On, off and threshold 0.3 all end at 0.68–0.69.
+- **Fine-tuning does not improve public scGPT on PBMC.** It drops at first (~0.57 at epoch 5) and recovers to ~0.68–0.69 by epoch 25–30, just under its zero-shot 0.709. The "decrease" in A12 was mostly noise.
+- **Implication for Task 1:** a single seed cannot resolve differences smaller than ~0.07. Use ≥ 3 seeds and report mean ± sd. The paper reports single numbers with no error bars (its gap is 0.783 vs 0.753 = 0.03, below this noise level).
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.
@@ -264,6 +281,6 @@ Raw output in `diag/results/A10_seeds.txt`. Val recon per seed:
 1. ~~What is the escape rate per objective?~~ Answered in A8: lr 3e-5 fixes plain scGPT 4/4. Still to check: do the JEPA variants also train reliably at lr 3e-5?
 2. ~~Why does the paper's JEPA collapse in the full run but not the short run?~~ Answered in A8: escape is seed-dependent at lr 1e-4, and collapse goes together with failing to escape.
 3. Why do several fine-tunes produce identical, degenerate outputs (A4b)?
-3b. Why does PBMC fine-tuning *lower* public scGPT's clustering (A12)? Check ECS threshold / best-epoch selection.
+3b. ~~Why does PBMC fine-tuning lower public scGPT?~~ Answered in A13: mostly run-to-run noise (±0.07); ECS is not the cause. Fine-tuning does not help public scGPT on PBMC.
 4. Metric scale: do we need per-cell metrics to match the paper's numbers?
 5. Is any deep model ever better than linear on the Adamson test split?

@@ -41,7 +41,7 @@ The paper (arXiv 2602.02093) has three evaluations, all comparing kidney-pretrai
 - ✅ GEPC loss (scGPT MVC-style head)
 - ✅ First runs (A12): kidney JEPA `center` 0.653; public scGPT 0.624 (*lower* than its zero-shot 0.709, needs a look); `token` 0.479
 - ⬜ Run on the lr 3e-5 kidney checkpoints (matched JEPA vs scGPT)
-- ⬜ Investigate why fine-tuning lowers public scGPT (ECS threshold, final vs best epoch)
+- ✅ Investigated (A13): noise ±0.07 between identical runs; ECS not the cause → Task 1 needs ≥ 3 seeds
 - ⬜ Same metrics as Task 2; compare with Table 1 (0.783 vs 0.753)
 
 ## 4. Task 3: perturbation prediction
