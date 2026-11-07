@@ -49,11 +49,11 @@ The paper (arXiv 2602.02093) has three evaluations, all comparing kidney-pretrai
 - ✅ Baselines: no-change (0.0915), training-mean (0.0588), **linear (0.0575)** test delta RMSE
 - ✅ Fine-tune recipes: Cell-JEPA (MSE + 1.0·JEPA + 0.8·ECS) and paper-matched scGPT (MSE + 0.8·ECS)
 - ✅ Pipeline tested end to end: public scGPT (4 runs) and Luke's short kidney checkpoints (10 runs) (A4)
-- ⬜ **Main Track A fine-tunes** from the A9 checkpoints: {kidney-JEPA, kidney-scGPT} × {Cell-JEPA FT, scGPT FT} × seeds {1,2} = 8 runs
+- ✅ **Main Track A fine-tunes** (A14, 16 runs incl. token/center): kidney JEPA + Cell-JEPA FT 0.078 vs kidney scGPT + scGPT FT 0.079 delta RMSE. JEPA marginally better on all metrics; all lose to linear (0.058)
 - ⚠️ Metric scale mismatch: ours are mean-based (absolute Pearson ~0.99); the paper reports 0.905. We save per-cell metrics (`test_percell`) but haven't checked them against the paper.
 - ⚠️ Some fine-tunes produce identical, input-independent predictions (A4b). Cause unknown.
 - ⬜ Norman dataset (CRISPRa, singles + combos; `combo_seen0/1/2` subgroups). Not implemented.
-- ⬜ Compare with Tables 3–4
+- ✅ Compare with Tables 3–4: small absolute gain replicates (within noise); the paper's Δ-metric drop does **not** replicate; metric scale still differs
 
 ## 5. Reporting
 - ✅ `attempts.md` run log; Track B report on the volume

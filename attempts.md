@@ -291,9 +291,31 @@ Same procedure and metrics as A11; one embedding pass per checkpoint, determinis
 - **Caveat:** PCA-50 (0.773) still beats every model, including the paper's reported Cell-JEPA. The paper never compared against PCA.
 - Not yet checked: seed variation. Each pretraining run is a single seed; the embedding step is deterministic.
 
-### Task 3: Adamson perturbation, 16 runs
+### Task 3: Adamson perturbation, 16 runs (paper Tables 3–4)
 
-*Running.*
+All 16 completed (15 epochs, ~28 min for the scGPT recipe, ~38 min for the Cell-JEPA recipe, B300). Values are means over seeds 1, 2; the ± is the spread across those two seeds. Test set: 22 held-out genes. Same split as every earlier run. Full table in `diag/results/A14_task3_summary.json`.
+
+| Pretrained ckpt → FT recipe | delta RMSE ↓ | GEARS abs Pearson / DE / top20 | GEARS Δ Pearson / DE / top20 | per-cell abs Pearson / DE | per-cell Δ Pearson / DE |
+|---|---|---|---|---|---|
+| **kidney JEPA → Cell-JEPA FT (paper's arm)** | **0.078 ± 0.002** | 0.989 / 0.971 / 0.967 | 0.573 / 0.753 / 0.757 | 0.846 / 0.919 | 0.636 / 0.713 |
+| **kidney scGPT → scGPT FT (paper's baseline)** | **0.079 ± 0.000** | 0.988 / 0.969 / 0.966 | 0.555 / 0.741 / 0.741 | 0.845 / 0.918 | 0.635 / 0.708 |
+| kidney JEPA → scGPT FT | 0.076 ± 0.002 | 0.989 / 0.972 / 0.969 | 0.575 / 0.748 / 0.751 | 0.846 / 0.920 | 0.637 / 0.712 |
+| kidney scGPT → Cell-JEPA FT | 0.080 ± 0.001 | 0.988 / 0.968 / 0.965 | 0.555 / 0.744 / 0.746 | 0.845 / 0.917 | 0.634 / 0.704 |
+| JEPA `token` → Cell-JEPA FT | 0.074 ± 0.002 | 0.990 / 0.969 / 0.965 | 0.577 / 0.748 / 0.751 | 0.846 / 0.917 | 0.637 / 0.708 |
+| JEPA `token` → scGPT FT | 0.079 ± 0.000 | 0.988 / 0.965 / 0.960 | 0.528 / 0.733 / 0.733 | 0.845 / 0.913 | 0.635 / 0.697 |
+| JEPA `center` → Cell-JEPA FT | 0.076 ± 0.002 | 0.989 / 0.967 / 0.963 | 0.572 / 0.737 / 0.741 | 0.846 / 0.916 | 0.637 / 0.705 |
+| JEPA `center` → scGPT FT | 0.074 ± 0.001 | 0.990 / 0.968 / 0.964 | 0.562 / 0.738 / 0.739 | 0.847 / 0.917 | 0.638 / 0.709 |
+| **Linear baseline** | **0.058** | 0.993 / 0.970 / 0.966 | **0.720** / 0.735 / 0.738 | **0.854** / 0.919 | **0.659** / 0.708 |
+| Training mean | 0.059 | 0.993 / 0.969 / 0.965 | 0.711 / 0.729 / 0.733 | 0.854 / 0.918 | 0.658 / 0.704 |
+| No change | 0.091 | 0.986 / 0.919 / 0.906 | undefined | 0.751 / 0.825 | undefined |
+| *(paper)* Cell-JEPA | — | 0.937 / 0.741 / 0.720 | 0.120 / −0.176 / −0.152 | | |
+| *(paper)* scGPT | — | 0.905 / 0.699 / 0.677 | 0.173 / 0.101 / 0.120 | | |
+
+- **The paper's direction holds weakly on absolute metrics.** Kidney JEPA + Cell-JEPA FT beats kidney scGPT + scGPT FT on every column, but only by 0.001–0.016. The delta-RMSE gap (0.078 vs 0.079) is within seed spread.
+- **The paper's delta collapse does not replicate.** The paper has Cell-JEPA *worse* on Δ metrics (−0.176 Δ-Pearson DE). Ours is slightly *better* on Δ (0.753 vs 0.741).
+- **Pretraining matters slightly more than the fine-tune recipe.** JEPA-pretrained checkpoints are ~0.002–0.003 delta RMSE better than scGPT-pretrained ones under either recipe. Swapping the recipe on a fixed checkpoint changes almost nothing.
+- **Every deep model loses to the simple baselines** (linear 0.058, training mean 0.059 vs best deep 0.074). Linear also wins on GEARS Δ-Pearson (0.72 vs ≤0.58) and per-cell metrics. This matches Ahlmann-Eltze et al. 2025.
+- **The metric scale still does not match the paper.** Our mean-based absolute Pearson is ~0.99 (paper 0.90–0.94). Our per-cell absolute Pearson (~0.85) is closer, but our Δ metrics (0.55–0.76) are far above the paper's (−0.18 to 0.17). The paper's exact metric definition remains unknown.
 
 ## Literature context (for the write-up)
 
