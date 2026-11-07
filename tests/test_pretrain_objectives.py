@@ -536,3 +536,22 @@ def test_jepa_variant_forward_backward(variant):
         s2 = TinyModel(); t2 = pm.make_teacher(s2); p2 = pm.CLSPredictor(D)
         o2 = pm.forward_losses("jepa", s2, t2, p2, batch, H, AMP)
         assert torch.allclose(o2["loss"], out["loss"].detach())
+
+
+@pytest.mark.parametrize("variant", ["faithful", "center", "vicreg", "token"])
+def test_init_ckpt_with_every_jepa_variant(cache_dir, tmp_path, monkeypatch, variant):
+    import src.track_a.pretrain as P
+    from src.models import SimpleVocab, state_hash
+
+    monkeypatch.setattr(P, "build_student", _tiny_student)
+    out, vp = cache_dir
+    ck, src = _tiny_ckpt(tmp_path, vp)
+    cfg = PretrainConfig(objective="jepa", d_model=D, nhead=H, batch_size=8, init_ckpt=ck, jepa_variant=variant)
+    tr = P.Pretrainer(cfg, SimpleVocab(vp), "cpu")
+    assert tr.init_hash == state_hash(src) == state_hash(tr.teacher)
+    if variant != "faithful":
+        assert pm.VARIANT_DESCRIPTIONS[variant] in cfg.deviations
+    c = KidneyCache(out)
+    nb = collate(c, epoch_cells(c, cfg, 0)[:8], cfg.max_genes, cfg.mask_ratio, batch_rng(0, 0, 0), tr.cls_id, tr.pad_id)
+    res = tr.train_step(nb)
+    assert torch.isfinite(res["loss"]) and "teacher_cls_std" in res
