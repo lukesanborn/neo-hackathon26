@@ -1,0 +1,110 @@
+{
+ "T1 scgpt_kidney_lr3e5 s0": {
+  "run": "scgpt_kidney_lr3e5_scgptFT_s0",
+  "AvgBIO": 0.4991805594079093,
+  "NMI": 0.5755512799328002,
+  "ARI": 0.2430445588858679,
+  "ASW": 0.6789458394050598,
+  "best_resolution": 0.7,
+  "minutes": 17.3
+ },
+ "T1 scgpt_kidney_lr3e5 s1": {
+  "run": "scgpt_kidney_lr3e5_scgptFT_s1",
+  "AvgBIO": 0.4973947569964689,
+  "NMI": 0.5736276730325802,
+  "ARI": 0.23534962249677396,
+  "ASW": 0.6832069754600525,
+  "best_resolution": 0.6,
+  "minutes": 18.8
+ },
+ "T1 scgpt_kidney_lr3e5 s2": {
+  "run": "scgpt_kidney_lr3e5_scgptFT_s2",
+  "AvgBIO": 0.5043606670559158,
+  "NMI": 0.5712413326858573,
+  "ARI": 0.25998485581308967,
+  "ASW": 0.6818558126688004,
+  "best_resolution": 0.5,
+  "minutes": 17.3
+ },
+ "T1 jepa_kidney_lr3e5 s0": {
+  "run": "jepa_kidney_lr3e5_jepaFT_s0",
+  "AvgBIO": 0.731884785552587,
+  "NMI": 0.7335893150898601,
+  "ARI": 0.81133627941809,
+  "ASW": 0.6507287621498108,
+  "best_resolution": 0.1,
+  "minutes": 21.3
+ },
+ "T1 jepa_kidney_lr3e5 s1": {
+  "run": "jepa_kidney_lr3e5_jepaFT_s1",
+  "AvgBIO": 0.6303649927551088,
+  "NMI": 0.6807017594731144,
+  "ARI": 0.5523502067692401,
+  "ASW": 0.6580430120229721,
+  "best_resolution": 0.2,
+  "minutes": 20.1
+ },
+ "T1 jepa_kidney_lr3e5 s2": {
+  "run": "jepa_kidney_lr3e5_jepaFT_s2",
+  "AvgBIO": 0.7229482881310357,
+  "NMI": 0.7257206819605194,
+  "ARI": 0.7890155687031111,
+  "ASW": 0.6541086137294769,
+  "best_resolution": 0.1,
+  "minutes": 23.6
+ },
+ "T1 jepa_kidney_lr3e5_token s0": {
+  "run": "jepa_kidney_lr3e5_token_jepaFT_s0",
+  "AvgBIO": 0.49775570151308673,
+  "NMI": 0.5471666660770169,
+  "ARI": 0.3590852566823818,
+  "ASW": 0.5870151817798615,
+  "best_resolution": 0.2,
+  "minutes": 23.0
+ },
+ "T1 jepa_kidney_lr3e5_token s1": {
+  "run": "jepa_kidney_lr3e5_token_jepaFT_s1",
+  "AvgBIO": 0.552156024907276,
+  "NMI": 0.5726413739481192,
+  "ARI": 0.4888235429196285,
+  "ASW": 0.5950031578540802,
+  "best_resolution": 0.1,
+  "minutes": 22.9
+ },
+ "T1 jepa_kidney_lr3e5_token s2": {
+  "run": "jepa_kidney_lr3e5_token_jepaFT_s2",
+  "AvgBIO": 0.5419114117639185,
+  "NMI": 0.5561020785779606,
+  "ARI": 0.4921706234653706,
+  "ASW": 0.5774615332484245,
+  "best_resolution": 0.1,
+  "minutes": 22.5
+ },
+ "T1 jepa_kidney_lr3e5_center s0": {
+  "run": "jepa_kidney_lr3e5_center_jepaFT_s0",
+  "AvgBIO": 0.6125684795839367,
+  "NMI": 0.6482682404441719,
+  "ARI": 0.6001889359618474,
+  "ASW": 0.5892482623457909,
+  "best_resolution": 0.1,
+  "minutes": 22.6
+ },
+ "T1 jepa_kidney_lr3e5_center s1": {
+  "run": "jepa_kidney_lr3e5_center_jepaFT_s1",
+  "AvgBIO": 0.5575812481697738,
+  "NMI": 0.5703240746253798,
+  "ARI": 0.5192824109966508,
+  "ASW": 0.583137258887291,
+  "best_resolution": 0.1,
+  "minutes": 22.5
+ },
+ "T1 jepa_kidney_lr3e5_center s2": {
+  "run": "jepa_kidney_lr3e5_center_jepaFT_s2",
+  "AvgBIO": 0.635295429837817,
+  "NMI": 0.6677549364527167,
+  "ARI": 0.6459991497798083,
+  "ASW": 0.5921322032809258,
+  "best_resolution": 0.1,
+  "minutes": 23.5
+ }
+}

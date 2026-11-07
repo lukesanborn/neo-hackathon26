@@ -428,6 +428,25 @@ Merged from the Unit 2 branch. Experiment `replogle_k562_v1`, GEARS-processed (d
 - Replogle is a harder benchmark than Adamson: Δ-Pearson ~0.4 vs ~0.7. Linear and training mean are closer to no-change here.
 - **Timing pilot** (B300, `scgpt_paper`, public scGPT): 0.116 s/step at batch 64, 790 steps/epoch → **~30 min per 15-epoch fine-tune**; peak GPU 17.8 GB.
 
+## A15. Task 1: PBMC-10K fine-tuning on the lr 3e-5 kidney checkpoints, 3 seeds (Nov 7)
+
+`diag/launch_task1_lr3e5.py`, results in `diag/results/A15_task1_results.json`. Recipe as in A12 (paper App. E.2); each checkpoint is fine-tuned with its own objective; seeds 0, 1, 2. Values are mean ± sd over the 3 seeds.
+
+| Fine-tuned from | AvgBIO | NMI | ARI | ASW | zero-shot (A14) |
+|---|---|---|---|---|---|
+| **kidney JEPA `faithful` (paper method)** | **0.695 ± 0.046** | 0.713 ± 0.023 | 0.718 ± 0.117 | 0.654 ± 0.003 | 0.606 |
+| kidney JEPA `center` | 0.602 ± 0.033 | 0.629 ± 0.042 | 0.588 ± 0.052 | 0.588 ± 0.004 | 0.471 |
+| kidney JEPA `token` | 0.531 ± 0.024 | 0.559 ± 0.011 | 0.447 ± 0.062 | 0.586 ± 0.007 | 0.428 |
+| **kidney plain scGPT (matched baseline)** | **0.500 ± 0.003** | 0.573 ± 0.002 | 0.246 ± 0.010 | 0.681 ± 0.002 | 0.375 |
+| *(A11)* PCA-50, no model | 0.773 | 0.838 | 0.881 | 0.600 | |
+| *(paper)* Cell-JEPA / scGPT | 0.783 / 0.753 | 0.776 / 0.765 | 0.847 / 0.784 | 0.726 / 0.710 | |
+
+- **Task 1 replicates in direction, with a larger gap than the paper.** JEPA − scGPT = **+0.195 AvgBIO** (paper +0.030). It is far outside the seed spread: the JEPA arm's worst seed (0.630) beats scGPT's best (0.504).
+- The gain comes mostly from **ARI** (0.72 vs 0.25: JEPA embeddings form clusters that match cell types). scGPT has the slightly higher ASW (0.68 vs 0.65).
+- Fine-tuning improves every kidney checkpoint over zero-shot (+0.09 to +0.13). The ordering is unchanged (`faithful` > `center` > `token` > scGPT).
+- Seed spread: JEPA ±0.046 (one seed at 0.630, two at ~0.73), scGPT ±0.003. Consistent with A13's ~±0.07 single-run noise for some checkpoints.
+- PCA-50 (0.773) still beats every fine-tuned model. The paper's absolute numbers are higher than ours (our scGPT baseline 0.50 vs 0.75).
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.

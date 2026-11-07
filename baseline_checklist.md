@@ -40,9 +40,9 @@ The paper (arXiv 2602.02093) has three evaluations, all comparing kidney-pretrai
 - ✅ Implement the fine-tune loop: GEP + GEPC + ECS (+ JEPA for Cell-JEPA), 40% masking, Adam 1e-4 ×0.9/epoch, batch 64, 30 epochs, 9:1 split with seed 42 (App. E.2) (`src/track_a/pbmc_finetune.py`)
 - ✅ GEPC loss (scGPT MVC-style head)
 - ✅ First runs (A12): kidney JEPA `center` 0.653; public scGPT 0.624 (*lower* than its zero-shot 0.709, needs a look); `token` 0.479
-- ⬜ Run on the lr 3e-5 kidney checkpoints (matched JEPA vs scGPT)
+- ✅ Run on the lr 3e-5 kidney checkpoints, 3 seeds (A15): **JEPA 0.695 ± 0.046 vs scGPT 0.500 ± 0.003** (paper 0.783 vs 0.753) → replicates in direction
 - ✅ Investigated (A13): noise ±0.07 between identical runs; ECS not the cause → Task 1 needs ≥ 3 seeds
-- ⬜ Same metrics as Task 2; compare with Table 1 (0.783 vs 0.753)
+- ✅ Same metrics as Task 2; compared with Table 1: direction replicates (+0.195 vs paper +0.030); absolute values lower; PCA (0.773) beats all
 
 ## 4. Task 3: perturbation prediction
 - ✅ Adamson data contract, GEARS simulation split (seed 1), shared evaluation controls
