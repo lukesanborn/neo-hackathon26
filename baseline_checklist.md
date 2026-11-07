@@ -23,9 +23,9 @@ The paper (arXiv 2602.02093) has three evaluations, all comparing kidney-pretrai
 - ✅ JEPA objective (student/EMA teacher, value masking 15%, attention mask, 1000×cosine + recon) and matched scGPT objective
 - ✅ Paper schedule fixed: **4 epochs** (code previously said 44)
 - ✅ Diagnosed plain-scGPT stall and paper-JEPA collapse at lr 1e-4; both fixed by **lr 3e-5** (12/12 seeds); backup: lr 1e-4 + 4k-step warmup (`attempts.md` A6–A10)
-- 🔄 **Main pretraining runs at lr 3e-5** (A9): scGPT, JEPA `faithful` (paper), JEPA `token`, JEPA `center` (~1.5 h)
+- ✅ **Main pretraining runs at lr 3e-5** (A9): scGPT 15.68, JEPA `faithful` 17.73, `token` 18.40, `center` 18.73 val recon
 - ✅ JEPA `token` and `center` at lr 1e-4 finished (val recon 18.07 / 18.12, no collapse). Kept as extra checkpoints.
-- ⬜ Confirm the A9 runs finish without collapse (teacher spread > 0.01) and export checkpoints
+- ✅ No collapse (teacher spread 0.037–0.040); checkpoints exported as `*_kidney_lr3e5*`
 - ⬜ Record final lr and runtime in the `docs/track_a.md` deviation log
 
 ## 2. Task 2: zero-shot cell-type clustering on PBMC-10K (paper's headline; no training needed)

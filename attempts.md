@@ -160,15 +160,26 @@ Plain scGPT, 3,000 steps.
 
 ---
 
-## A9. Full 4-epoch pretraining at lr 3e-5, all objectives (Nov 7, running)
+## A9. Full 4-epoch pretraining at lr 3e-5, all objectives (Nov 7)
 
 Launched with `diag/launch_pretrain_lr3e5.py` (call ids in `diag/call_ids_A9.json`). Paper schedule except **lr 3e-5** (paper: 1e-4; deviation justified by A8). Seed 0, clip 1.0, bf16, B300.
 - Run dirs: `trackA/pretrain/runs/{scgpt_lr3e5, jepa_lr3e5, jepa_lr3e5_token, jepa_lr3e5_center}`
 - Checkpoints: `trackA/checkpoints/<objective>_kidney_<tag>`
 
-Progress at ~19 min: plain scGPT val recon **17.18 after epoch 1** (better than any lr 1e-4 run). The JEPA runs had not logged an epoch yet.
+Final results (validation masked-reconstruction MSE per epoch; teacher spread = collapse check, ~0 = collapsed):
 
-The A5 `token`/`center` runs at lr 1e-4 **finished**: best val recon 18.07 (`token`) / 18.12 (`center`), at epoch 4. Teacher spread stayed at 0.032 / 0.042 (no collapse). Checkpoints: `trackA/checkpoints/jepa_kidney_v1_token`, `jepa_kidney_v1_center`.
+| Run | Ep 1 | Ep 2 | Ep 3 | Ep 4 (best) | Teacher spread at end | Wall time |
+|---|---|---|---|---|---|---|
+| **plain scGPT** | 17.18 | 16.24 | 16.19 | **15.68** | — | 73 min |
+| JEPA `faithful` (paper) | 19.25 | 18.63 | 18.13 | **17.73** | 0.039 | ~86 min |
+| JEPA `token` | 19.76 | 19.31 | 18.77 | **18.40** | 0.037 | ~88 min |
+| JEPA `center` | 21.82 | 19.90 | 20.24 | **18.73** | 0.040 | ~86 min |
+
+- **First working kidney scGPT baseline.** It improved every epoch, unlike lr 1e-4 (stuck at 35–50).
+- **The paper's JEPA did not collapse at lr 3e-5.** Spread held at 0.036–0.039, versus 0.00002 at lr 1e-4 (A5).
+- JEPA reconstructs worse than plain scGPT (17.7–18.7 vs 15.7). This is the expected cost of the extra latent objective, and reconstruction is not the paper's evaluation. The comparison that matters is downstream (Tasks 1–3).
+- Checkpoints: `trackA/checkpoints/{scgpt_kidney_lr3e5, jepa_kidney_lr3e5, jepa_kidney_lr3e5_token, jepa_kidney_lr3e5_center}`.
+- The A5 `token`/`center` runs at lr 1e-4 finished at val recon 18.07 / 18.12. Their checkpoints are `jepa_kidney_v1_token` and `jepa_kidney_v1_center`.
 
 ## A10. Seed check: JEPA at lr 3e-5, and Xiong-style warmup (Nov 7, running)
 
