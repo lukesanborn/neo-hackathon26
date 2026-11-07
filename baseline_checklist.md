@@ -75,7 +75,9 @@ The paper (arXiv 2602.02093) has three evaluations, all comparing kidney-pretrai
 - ✅ Bootstrap CIs (A17): deep>linear identification is only a trend (CI includes 0); public Cell-JEPA FT > scGPT FT on cluster agreement (+0.29, CI excludes 0)
 - ✅ Replogle K562 essential prepared (A20): 412 knockdowns kept (680 excluded: target not a measured gene), 103 test genes; linear 0.0755 / training mean 0.0773 delta RMSE; ~30 min per fine-tune
 - ⬜ Replogle fine-tunes (public scGPT + kidney ckpts, both recipes, seeds) + retrieval on 103 test genes
-- 🔄 Continued pretraining of public scGPT ± JEPA on 2M blood/marrow cells (data + code units running)
+- ✅ Continued-pretraining code from public scGPT (A18) and 2M blood/marrow cache (A21)
+- ✅ `<cls>` pilot (A19): paper JEPA slowly collapses from public scGPT; `center` carries per-cell signal
+- ⬜ Blood continued pretraining: scGPT vs JEPA `center` (+ paper JEPA as reference), 2 epochs, lr 3e-5
 - ⬜ E9: few-cell perturbation identification from frozen embeddings (top-ranked in `experiment.md`; no training)
 - ⬜ Cell-type / cell-state annotation via a linear probe on frozen embeddings (reuses the Task 2 code)
 - ⬜ In-silico perturbation ranking with the fine-tuned predictor (prioritise knockdowns against a target expression profile)

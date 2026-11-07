@@ -447,6 +447,14 @@ Merged from the Unit 2 branch. Experiment `replogle_k562_v1`, GEARS-processed (d
 - Seed spread: JEPA ±0.046 (one seed at 0.630, two at ~0.73), scGPT ±0.003. Consistent with A13's ~±0.07 single-run noise for some checkpoints.
 - PCA-50 (0.773) still beats every fine-tuned model. The paper's absolute numbers are higher than ours (our scGPT baseline 0.50 vs 0.75).
 
+## A21. Blood + bone-marrow pretraining cache, 2M cells (Nov 7)
+
+Merged from the Unit 3 branch. `/vol/trackA/blood_marrow_census_2023-05-15_2M`, same shard contract as kidney (loads with the unchanged `KidneyCache`).
+- **Filter:** Census 2023-05-15, `tissue_general in ['blood', 'bone marrow'] and disease == 'normal' and suspension_type != 'na'`. 5,166,736 matching cells from 55 datasets → seeded random sample of **2,000,000** (blood 1.77M, marrow 0.23M).
+- **Data:** 25 shards; split 1,980,000 train / 20,000 val. Mean 1,438 expressed genes per cell (median 1,259; 88% > 600). 100% of genes in the scGPT vocab. RAM to load: ~14.4 GB (the pretrain container has 64 GB).
+- **Leakage check for the PBMC-10K evaluation data** (10x pbmc4k/pbmc8k): no matching dataset by title/collection, nothing excluded. 17 broader PBMC/10x datasets were reviewed and kept (listed in the manifest). Limitation: this is a text-based screen only.
+- **Build:** ~6 min (8 parallel shard containers). Kidney corpus defaults are unchanged and pinned by a test.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.
