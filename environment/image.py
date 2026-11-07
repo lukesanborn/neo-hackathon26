@@ -25,6 +25,7 @@ import os
 
 import modal
 
+DEMO_TEMPLATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src", "demo_template.html")
 SHIM_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "torchtext_shim")
 PYTHON_VERSION = "3.11"
 
@@ -96,4 +97,7 @@ def build_image(stack: str = "hopper") -> modal.Image:
             f"scgpt=={PINNED['scgpt']}", extra_options="--no-deps --ignore-requires-python"
         ).add_local_dir(SHIM_DIR, "/opt/torchtext_shim", copy=True)
         env = {**ENV, "JEPA_STACK": "blackwell", "PYTHONPATH": "/opt/torchtext_shim"}
-    return img.env(env).add_local_python_source("src", "environment")
+    # add_local_python_source ships only .py files; the demo template is mounted separately
+    return (img.env({**env, "JEPA_DEMO_TEMPLATE": "/opt/demo/demo_template.html"})
+            .add_local_python_source("src", "environment")
+            .add_local_file(DEMO_TEMPLATE, "/opt/demo/demo_template.html"))

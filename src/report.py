@@ -168,7 +168,8 @@ def aggregate(ds, exp_dir: str, out_dir: str) -> dict:
     demo = _demo_payload(ds, entries, seed_avg, methods, summary, ctrl, claim, report)
     with open(os.path.join(out_dir, "demo_data.json"), "w") as f:
         json.dump(demo, f, separators=(",", ":"))
-    with open(os.path.join(os.path.dirname(__file__), "demo_template.html")) as f:
+    template = os.environ.get("JEPA_DEMO_TEMPLATE", os.path.join(os.path.dirname(__file__), "demo_template.html"))
+    with open(template) as f:
         html = f.read().replace("/*__DEMO_DATA__*/null", json.dumps(demo, separators=(",", ":")))
     with open(os.path.join(out_dir, "demo.html"), "w") as f:
         f.write(html)
@@ -273,7 +274,7 @@ def _plots(out_dir, summary, seed_avg, test, methods):
         ax.text(hi, i, f"  {r['delta_rmse']:.4f}", va="center", color="#52514e", fontsize=9)
     ax.set_yticks(ys, [r["label"] for r in summary])
     ax.invert_yaxis()
-    ax.set_xlabel("Mean per-intervention delta RMSE on held-out interventions (lower is better; 95% bootstrap CI)")
+    ax.set_xlabel("Mean delta RMSE, held-out interventions (lower is better; 95% CI)")
     ax.grid(axis="y", visible=False)
     fig.tight_layout()
     fig.savefig(os.path.join(out_dir, "aggregate_delta_rmse.png"), dpi=160)
