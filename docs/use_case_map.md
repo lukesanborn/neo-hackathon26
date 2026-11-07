@@ -189,26 +189,81 @@ We have evidence for none of these yet. Step 1 runs on predictions already saved
 
 ---
 
-## Sources
+## 7. The evidence ladder: correlation vs intervention
 
-- [Addgene, genome-wide KO libraries & relative screen costs (2026)](https://blog.addgene.org/julianna-and-jacquere-genome-wide-crispr-knockout-libraries)
-- [BioTechniques, next-generation genetic screening ($100k–$1M quote)](https://www.biotechniques.com/crispr/introducing-the-next-generation-of-genetic-screening)
-- [Harvard DRSC, "So you want to do a CRISPR pooled screen"](https://fgr.hms.harvard.edu/news/how-to-screen)
-- [UT Health San Antonio TDC, screening service timelines](https://gccri.uthscsa.edu/services/tdc/service-and-pricing/)
-- [VectorBuilder, pooled screen deconvolution pricing](https://en.vectorbuilder.com/products-services/service/library-construction/crispr-lib-service.html)
-- [Illumina, Perturb-seq on NovaSeq X — sequencing depth](https://jp.illumina.com/content/dam/illumina/gcs/assembled-assets/marketing-literature/novaseq-x-perturb-seq-tech-note-m-gl-02890/novaseq-x-perturb-seq-tech-note-m-gl-02890.pdf)
-- [Targeted Perturb-seq / TAP-seq (50× depth reduction)](https://pubmed.ncbi.nlm.nih.gov/32483332/)
-- [Compressed Perturb-seq (4–20× cost reduction)](https://www.biorxiv.org/content/10.1101/2023.01.23.525200v1.full.pdf)
-- [Pooled vs arrayed screening tradeoffs](https://synapse.patsnap.com/article/crispr-libraries-pooled-vs-arrayed-screening-pros-and-cons)
-- [Sigma/Merck CRISPR & RNAi screening guide](https://b2b.sigmaaldrich.com/US/en/technical-documents/technical-article/genomics/functional-genomics-screening/crispr-rnai-screening-guide)
-- [Wainberg et al., co-essential modules atlas (Nature Genetics 2021)](https://pubmed.ncbi.nlm.nih.gov/33859415/)
-- [Replogle et al., genome-scale Perturb-seq (Cell 2022)](https://pesquisa.bvsalud.org/portal/resource/e/mdl-35688146)
-- [Stoeger et al., understudied genes](https://pmc.ncbi.nlm.nih.gov/articles/PMC6759675)
-- [Drug development timeline (target ID 1–2 yr)](https://intuitionlabs.ai/articles/drug-development-timeline-explained)
+This is the distinction that separates Stage 1 from Stages 2–3, and it is the clearest way to
+explain what perturbation data buys.
 
----
+### Correlational evidence — observing natural variation
 
-## 7. Side-by-side: today's decision tree vs ours (assuming every claim validates)
+Every free method in Stage 1 works the same way: look across many samples, see what varies
+together, infer a relationship.
+
+| Method | What it observes |
+|---|---|
+| Co-expression | genes whose expression rises and falls together across samples |
+| **Co-essentiality (DepMap)** | genes whose loss hurts the same cell lines |
+| STRING / BioGRID | proteins found physically associated |
+| Homology | sequences that resemble each other |
+
+Three limits, all of them standard:
+
+1. **Confounding.** A and B may move together because C drives both. Two genes can co-express
+   simply because both are cell-cycle regulated, with no functional relationship at all.
+2. **No direction.** Correlation cannot distinguish A→B from B→A from "neither."
+3. **Limited range.** You only observe the states the cells happened to visit. If no cell line in
+   DepMap ever lost gene A under the condition you care about, there is nothing to correlate.
+
+These methods are genuinely useful — co-essentiality clustering assigned function to 108
+uncharacterised genes (Wainberg 2021) — but every conclusion carries those three caveats.
+
+### Interventional evidence — setting the variable yourself
+
+A knockdown screen does something categorically different: it **sets** the value of one gene rather
+than observing it. If you suppress gene A and gene B changes, that is A→B within that system,
+with confounding broken by construction — you chose A's value, so nothing upstream explains it.
+
+This is why the "what does gene X do?" question needs Stage 2. The question is inherently
+interventional: *what happens if this gene is not there?* Correlation describes the system as it
+is; only an intervention tells you what it does when you change it.
+
+The practical consequence for function assignment:
+
+> Co-expression groups genes that are **regulated together**.
+> Perturbation groups genes by **what they control**.
+
+Those are different groupings, and for drug targets the second is the one that matters — "what
+happens if I inhibit this?" is an intervention question that no amount of observational data
+answers directly.
+
+### Caveats on the causal side — it is not a clean win
+
+- A Perturb-seq result is causal **for that cell type, that timepoint, that degree of knockdown**.
+  It does not automatically generalise.
+- Knockdown is partial and variable; a meaningful fraction of cells escape, which is why tooling
+  like Mixscape exists to detect them.
+- "A→B" is measured. "Gene A's function is X" is an inference layered on top, and that inference
+  is where most of the arguing happens.
+
+### Where our model actually sits — and this is the uncomfortable part
+
+The model is **trained on interventional data but does not itself perform an intervention.** It
+predicts what a knockdown would do by extrapolating patterns from knockdowns it has seen.
+
+That puts it on a third rung, between the other two:
+
+| Rung | What it is | Strength |
+|---|---|---|
+| Observational | co-expression, co-essentiality | Weakest: confounded, directionless |
+| **Predicted interventional (us)** | **pattern extrapolation from measured interventions** | **Inherits the training data's causal grounding, but the extrapolation itself is a correlational step** |
+| Measured interventional | the actual screen | Strongest for that context |
+
+So we are not "causal" in the way a screen is. We are a cheaper, broader estimate of what a screen
+would have shown — which is exactly why the output feeds a shortlist for Stage-3 validation rather
+than standing as a result on its own. A prediction is a hypothesis with evidence behind it, not a
+finding.
+
+## 8. Side-by-side: today's pipeline vs ours (assuming every claim validates)
 
 ### Cost / time reference for every option
 
@@ -225,61 +280,80 @@ Note the asymmetry in the Perturb-seq row: **cost scales with how many perturbat
 time does not.** That is what determines where a model can and cannot help — it can cut the bill
 or the cell requirement, but not the calendar.
 
-### TODAY
+### It is a funnel, not a menu
+
+The earlier draft of this document drew bulk pooled / Perturb-seq / arrayed as sibling options.
+That is wrong, and the literature is explicit: *"pooled screens are primarily used for **discovery**,
+whereas arrayed screens are primarily used for **validation and follow-up**"* (Nature Reviews
+Methods Primers). They are **stages**, and each one narrows the gene set while strengthening the
+evidence.
 
 ```
-"What does gene X do?"  (X poorly characterised)
-│
-├─ 1. Literature / homology ................ $0 · days
-│     └─ answer exists for well-studied genes → STOP
-│        (for ~80% of genes there is nothing to read)
-│
-├─ 2. Public data mining ................... $0 · days–weeks
-│     DepMap co-essentiality · co-expression · STRING · mouse KO
-│     └─ correlational hypothesis — THE FREE DEFAULT, often where it ends
-│        incumbent for function assignment: co-essentiality clustering
-│        (Wainberg 2021 → 108 uncharacterised genes)
-│
-└─ 3. Need causal, context-specific evidence → run a screen
-      │
-      ├─ Bulk pooled ......... cheapest · 12–20 wk · ONE number per gene
-      │
-      ├─ Perturb-seq ......... 10–25×   · 12–20 wk · FULL profile per gene
-      │     └─ cluster by effect → assign function
-      │        ~100–800 cells/perturbation → cost AND cell count scale
-      │        with the number of perturbations; time does not
-      │
-      └─ Arrayed follow-up ... high upfront · +4–5 wk · validate hits
+                     GENES CONSIDERED          EVIDENCE            COST / GENE
+STAGE 1  free, correlational
+  literature · homology · DepMap        20,000      weak, indirect        ~$0
+  co-expression · STRING · mouse KO        │
+         ───────────────────────────────── ▼ ─────────────────────────────────
+STAGE 2  broad discovery screen  (CAUSAL, but you must pick a readout)
+                                        500–20,000   causal, 1 context     low
+  ├─ bulk pooled .... ONE number/gene  ─────────── use when you CAN name the readout
+  └─ Perturb-seq .... FULL profile/gene ────────── use when you CANNOT
+                                           │
+         ───────────────────────────────── ▼ ─────────────────────────────────
+STAGE 3  arrayed validation                20–100    causal + clean       HIGH
+  one perturbation per well, rich readout  │         (robotics-bound)
+         ───────────────────────────────── ▼
+                                        a few confident answers
 ```
 
-### WITH THE MODEL (every claim validated)
+**The genuine choice is inside Stage 2, and it turns on one question: can you name the readout in
+advance?**
 
-Steps 1 and 2 are **unchanged** — still free, still first. Nothing we build displaces them.
+| Your question | Stage-2 tool | Why |
+|---|---|---|
+| "Which genes kill the cell / move marker X?" | **Bulk pooled** | One number per gene *is* the answer. Cheapest route to a shortlist. |
+| "What does this gene **do**?" | **Perturb-seq** | One number cannot answer it; you need an unbiased transcriptome |
+
+Why you cannot get Stage-2 breadth out of an arrayed plate: a transcriptome per well means **a
+separate RNA-seq library per well** — 2,000 wells, 2,000 library preps. Perturb-seq gets 2,000
+perturbation transcriptomes from ~30 channels because single-cell barcoding *is* the multiplexing.
+That is the entire reason the assay exists.
+
+### Where the model inserts
+
+Not as a new stage. It **widens Stage 2's output without widening Stage 2's cost**, so Stage 3
+draws its shortlist from a larger candidate pool.
 
 ```
-└─ 3. Need causal, context-specific evidence
-      │
-      ├─ Run Perturb-seq on the subset you can afford / have cells for
-      │        ........ SAME TIME as today, cost scales down with the subset
-      │                    │
-      │                    ▼
-      │        ╔═══════════════════════════════════╗
-      │        ║  MODEL EXTENDS IT   $0 · hours    ║
-      │        ╚═══════════════════════════════════╝
-      │                    │
-      │        ┌───────────┼───────────────┐
-      │        ▼           ▼               ▼
-      │   genes you    gene PAIRS      other contexts
-      │   left out     (~200M)         (cell types, doses)
-      │        └───────────┴───────────────┘
-      │                    ▼
-      │    predicted responses clustered against measured ones
-      │                    ▼
-      │    ranked shortlist + functional hypotheses
-      │                    ▼
-      └─ Arrayed validation ... +4–5 wk, same as today
-           but a better-chosen shortlist
+STAGE 1  unchanged — still free, still first. We displace nothing here.
+         │
+STAGE 2  run Perturb-seq on the subset you can afford / have cells for
+         (200 perturbations instead of 2,000)
+         │  measured profiles: 200
+         ▼
+    ╔═══════════════════════════════════════════════════╗
+    ║  MODEL EXTENDS THE CANDIDATE POOL    $0 · hours   ║
+    ╚═══════════════════════════════════════════════════╝
+         │  + predicted profiles: 1,800 genes · gene pairs · other contexts
+         ▼
+    candidate pool of 2,000 instead of 200
+         │
+         │  ← rank, cluster, shortlist
+         ▼
+STAGE 3  arrayed validation of the top 20–100   (unchanged: +4–5 wk, robotics-bound)
 ```
+
+**The consequence: arrayed validation happens either way, so the model's job is to make the
+shortlist better, not to remove a step.** If the top 50 predictions contain 30 real hits instead of
+10, that is 20 wells of validation not wasted.
+
+Which names the metric the business case actually rests on: **precision at the top of the ranking**
+— not delta RMSE, and not the clustering correlation in `docs/clustering_finding.md`. That is a
+third independent reason our headline metric was the wrong one, and the most directly economic.
+
+It also partly rescues the cost argument from erosion: cheaper sequencing shrinks the Stage-2 bill,
+but **it does not make Stage 3 cheaper** — arrayed cost is bounded by robotics and per-well
+handling. Better ranking saves validation effort no matter how cheap sequencing gets.
 
 ### Worked example: functional data on 2,000 candidate genes
 
@@ -392,9 +466,26 @@ Three things to keep attached to that claim:
    screen trains a model good enough to extend to 1,800 is the single most load-bearing untested
    assumption in this document.
 
+---
 
-### Sources added for the labor model
+## Sources
 
+- [Addgene, genome-wide KO libraries & relative screen costs (2026)](https://blog.addgene.org/julianna-and-jacquere-genome-wide-crispr-knockout-libraries)
+- [BioTechniques, next-generation genetic screening ($100k–$1M quote)](https://www.biotechniques.com/crispr/introducing-the-next-generation-of-genetic-screening)
+- [Harvard DRSC, "So you want to do a CRISPR pooled screen"](https://fgr.hms.harvard.edu/news/how-to-screen)
+- [UT Health San Antonio TDC, screening service timelines](https://gccri.uthscsa.edu/services/tdc/service-and-pricing/)
+- [VectorBuilder, pooled screen deconvolution pricing](https://en.vectorbuilder.com/products-services/service/library-construction/crispr-lib-service.html)
+- [Illumina, Perturb-seq on NovaSeq X — sequencing depth](https://jp.illumina.com/content/dam/illumina/gcs/assembled-assets/marketing-literature/novaseq-x-perturb-seq-tech-note-m-gl-02890/novaseq-x-perturb-seq-tech-note-m-gl-02890.pdf)
+- [Targeted Perturb-seq / TAP-seq (50× depth reduction)](https://pubmed.ncbi.nlm.nih.gov/32483332/)
+- [Compressed Perturb-seq (4–20× cost reduction)](https://www.biorxiv.org/content/10.1101/2023.01.23.525200v1.full.pdf)
+- [Pooled vs arrayed screening tradeoffs](https://synapse.patsnap.com/article/crispr-libraries-pooled-vs-arrayed-screening-pros-and-cons)
+- [Sigma/Merck CRISPR & RNAi screening guide](https://b2b.sigmaaldrich.com/US/en/technical-documents/technical-article/genomics/functional-genomics-screening/crispr-rnai-screening-guide)
+- [Wainberg et al., co-essential modules atlas (Nature Genetics 2021)](https://pubmed.ncbi.nlm.nih.gov/33859415/)
+- [Replogle et al., genome-scale Perturb-seq (Cell 2022)](https://pesquisa.bvsalud.org/portal/resource/e/mdl-35688146)
+- [Stoeger et al., understudied genes](https://pmc.ncbi.nlm.nih.gov/articles/PMC6759675)
+- [Drug development timeline (target ID 1–2 yr)](https://intuitionlabs.ai/articles/drug-development-timeline-explained)
+- [Nature Reviews Methods Primers: pooled = discovery, arrayed = validation](https://www.nature.com/articles/s43586-021-00093-4.pdf)
+- [Arrayed screens need well-to-well automation, tens of thousands of wells](https://genengnews.com/topics/genome-editing/crispr-screens-should-be-exhaustive-not-exhausting)
 - [10x Chromium GEM-X technology (cells per channel, recovery)](https://www.10xgenomics.com/technology)
 - [10x instrument comparison tech note](https://cdn.10xgenomics.com/image/upload/v1660261285/support-documents/CG000428_ChromiumInstrumentDataComparisonTN_RevC.pdf)
 - [Core facility: ~8–12 h labor per library-prep batch, up to 8 samples at a time](https://biotech.illinois.edu/dna-services-core/dna-10x-single-cell-submission-requirements-and-other-information/)
