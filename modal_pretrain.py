@@ -8,7 +8,7 @@ deviation log.
     modal run modal_pretrain.py --stage smoke                      # synthetic cache, /vol/smoke/pretrain only
     modal run modal_pretrain.py --stage pilot --gpu H100           # throughput pilot on the real cache
     modal run modal_pretrain.py --stage pilot --smoke --steps 60   # pilot on the synthetic cache
-    modal run --detach modal_pretrain.py --stage train --epochs 44 --batch-size 32 --lr 1e-4
+    modal run --detach modal_pretrain.py --stage train --epochs 4 --batch-size 32 --lr 1e-4
     modal run modal_pretrain.py --stage export                     # re-export from the run dirs
     modal run modal_pretrain.py --stage check                      # load exports via src.models.build_scgpt
 
@@ -146,7 +146,7 @@ def integration_check(smoke: bool = True, objectives: str = "jepa,scgpt", tag: s
 
 @app.local_entrypoint()
 def main(stage: str = "smoke", objectives: str = "jepa,scgpt", tag: str = "v1", smoke: bool = False,
-         gpu: str = GPU, epochs: int = 44, batch_size: int = 32, lr: float = 1e-4, max_cells_per_epoch: int = 0,
+         gpu: str = GPU, epochs: int = 4, batch_size: int = 32, lr: float = 1e-4, max_cells_per_epoch: int = 0,
          max_minutes: float = 23 * 60.0, steps: int = 200, warmup: int = 20, batch_sizes: str = "32,256",
          seed: int = 0, ema_momentum: float = 0.996):
     def show(x):

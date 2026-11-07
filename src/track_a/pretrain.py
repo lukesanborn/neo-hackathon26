@@ -38,7 +38,9 @@ from .pretrain_model import (CLS_VALUE, DEVIATIONS, MASK_VALUE, OBJECTIVES, PAD_
                              random_value_mask)
 
 PAPER_N_CELLS = 814_000
-PAPER_EPOCHS = 44
+# Cell-JEPA App. E.1: "Training is conducted on the Kidney dataset for a total of 4 epochs" (batch 32):
+# ~814k cells x 4 / 32 ~= 102k steps, consistent with the paper's ~1 day on one A5000.
+PAPER_EPOCHS = 4
 VAL_EPOCH_KEY = 1_000_000  # RNG key for the fixed validation batches
 
 
@@ -493,7 +495,8 @@ def run_pilot(cache_dir: str, vocab_path: str, out_path: str, objectives=OBJECTI
               steps: int = 200, warmup: int = 20, seed: int = 0, base_lr: float = 1e-4, base_bs: int = 32,
               device: str = "cuda") -> dict:
     """Throughput pilot: per (objective, batch size) run warmup + ``steps`` steps on real batches
-    and project wall-clock for the paper schedule (44 epochs) and the bs=256 lr-scaled alternative."""
+    and project wall-clock for the paper schedule (``PAPER_EPOCHS`` = 4, App. E.1) and the bs=256
+    lr-scaled alternative."""
     vocab = SimpleVocab(vocab_path)
     cache = KidneyCache(cache_dir)
     rep = {"track": TRACK_LABEL, "environment": env_info(), "cache_dir": cache_dir, "n_cells": cache.n_cells,
@@ -542,8 +545,8 @@ def run_pilot(cache_dir: str, vocab_path: str, out_path: str, objectives=OBJECTI
                     "all_logged_losses_finite": all(math.isfinite(v) for l in losses for v in l.values()),
                     "steps_per_epoch_this_cache": spe,
                     "projected_hours_per_epoch_this_cache": spe * sps / 3600,
-                    "projected_hours_44_epochs_this_cache": PAPER_EPOCHS * spe * sps / 3600,
-                    "projected_hours_44_epochs_814k_cells": PAPER_EPOCHS * spe_paper * sps / 3600,
+                    "projected_hours_paper_epochs_this_cache": PAPER_EPOCHS * spe * sps / 3600,
+                    "projected_hours_paper_epochs_814k_cells": PAPER_EPOCHS * spe_paper * sps / 3600,
                     "status": "ok",
                 })
             except torch.cuda.OutOfMemoryError as e:
@@ -560,8 +563,8 @@ def run_pilot(cache_dir: str, vocab_path: str, out_path: str, objectives=OBJECTI
         rs = [rep["runs"].get(f"{o}_bs{bs}", {}) for o in objectives]
         if all(x.get("status") == "ok" for x in rs):
             by_bs[f"bs{bs}"] = {
-                "both_objectives_hours_44_epochs_this_cache": sum(x["projected_hours_44_epochs_this_cache"] for x in rs),
-                "both_objectives_hours_44_epochs_814k_cells": sum(x["projected_hours_44_epochs_814k_cells"] for x in rs),
+                "both_objectives_hours_paper_epochs_this_cache": sum(x["projected_hours_paper_epochs_this_cache"] for x in rs),
+                "both_objectives_hours_paper_epochs_814k_cells": sum(x["projected_hours_paper_epochs_814k_cells"] for x in rs),
             }
     rep["projection_summary"] = by_bs
     rep["init_hash_matched_across_objectives"] = len({hashes[k] for k in hashes}) <= 1

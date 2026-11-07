@@ -47,7 +47,7 @@ modal run modal_track_a.py --stage census --census-stage smoke
 modal run modal_track_a.py --stage census --census-stage full
 
 # 3. pretraining pilot on B300 for both objectives: prints s/step, cells/s, projected hours and
-#    cost for the paper schedule (44 ep, bs 32) and alternatives, then STOPS
+#    cost for the paper schedule (4 ep, bs 32) and alternatives, then STOPS
 modal run modal_track_a.py --stage pilot
 
 # 4. decide ONE schedule for both objectives, record it in the deviation log below, then:
@@ -114,9 +114,9 @@ against the PDF** before quoting.
 
 ## Cost / time notes
 
-* **Pretraining** (decided after the pilot): the paper's schedule is ≈ 814k cells × 44 epochs /
-  batch 32 ≈ **1.12M optimiser steps per model**, two models. The paper reports "about one day on
-  an A5000", which is hard to reconcile with 1.1M steps of a 12-layer scGPT; the pilot measures
+* **Pretraining** (decided after the pilot): the paper's schedule (App. E.1: "a total of 4 epochs") is
+  ≈ 814k cells × 4 epochs / batch 32 ≈ **102k optimiser steps per model**, two models — consistent
+  with the paper's "approximately one day on a single A5000 GPU" (≈ 0.85 s/step). The pilot measures
   s/step on B300 and prints projected hours and cost (both models) for the paper schedule and
   shorter alternatives. Cost uses an *assumed* `--usd-per-gpu-hour` (default 6.25) — verify on
   modal.com/pricing. Pretraining is never launched automatically.
@@ -145,8 +145,8 @@ against the PDF** before quoting.
 | Gradient clipping | Not stated | Clip global norm 1.0 in pretraining and fine-tuning, both objectives | Stability with the 1000× JEPA weight; note it rescales most JEPA steps, applied identically to the baseline |
 | JEPA target spread | Not discussed | Monitored: `teacher_cls_std` (pretraining) and `teacher_cls_pairwise_cos` / `jepa_meanpred_baseline` (fine-tuning); real-data pilot checked before full pretraining | Smoke tests showed near-constant teacher `<cls>` embeddings (risk that the JEPA term is trivially satisfied) |
 | Split | Unspecified seed | GEARS `simulation` split, seed 1 (same as Track B) | Reproducible; baselines identical across tracks |
-| Compute | ~1 day A5000 pretraining; 2 h vs 22 h fine-tuning reported in different places | Measured by our pilot on B300; reported actual runtimes | Paper's figures are inconsistent with ≈1.1M steps/model |
-| Pretraining schedule | 44 epochs, batch 32 | **TBD after pilot** (identical for both objectives) — record chosen bs / epochs / lr / max minutes here | Cost; any reduction applies to both models equally |
+| Compute | ~1 day A5000 pretraining; 2 h vs 22 h fine-tuning reported in different places | Measured by our pilot on B300; reported actual runtimes | Pretraining figure is consistent with ≈102k steps/model (4 ep × 814k / 32); the fine-tuning figures remain inconsistent |
+| Pretraining schedule | 4 epochs, batch 32 (App. E.1) | **TBD after pilot** (identical for both objectives) — record chosen bs / epochs / lr / max minutes here | Cost; any reduction applies to both models equally |
 | Seeds | Unspecified | Fine-tuning seeds 1, 2; one pretraining run per objective | Budget |
 
 Fill in the "TBD after pilot" row (and the actual runtime) before quoting any Track A result.
