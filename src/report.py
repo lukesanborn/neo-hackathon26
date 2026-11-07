@@ -16,15 +16,25 @@ import numpy as np
 from .evaluate import (GEARS_DE_MISSING_NOTE, GEARS_KEYS, METRIC_KEYS, bootstrap_mean_ci, evaluate_predictions,
                        paired_bootstrap_diff)
 
-METHOD_ORDER = ["celljepa", "jepa", "scgpt", "linear", "training_mean", "no_change"]
+METHOD_ORDER = ["celljepa", "jepa", "scgpt_paper", "scgpt", "linear", "training_mean", "no_change"]
 METHOD_LABEL = {"celljepa": "scGPT + Cell-JEPA FT recipe (unofficial)", "jepa": "scGPT + JEPA aux (ours)",
+                "scgpt_paper": "scGPT FT, paper baseline (MSE + ECS; unofficial)",
                 "scgpt": "scGPT (matched)", "linear": "Linear (gene emb.)",
                 "training_mean": "Training mean", "no_change": "No change"}
+TRAINED_METHODS = ("celljepa", "jepa", "scgpt_paper", "scgpt")   # seeded runs (vs deterministic baselines)
 # Overlapping-mark charts (dot plots, demo comparisons) show at most 3 series, chosen in this order.
-COMPARE_PRIORITY = ["celljepa", "scgpt", "linear", "jepa"]
+COMPARE_PRIORITY = ["celljepa", "scgpt", "scgpt_paper", "linear", "jepa"]
+
+
+def matched_scgpt(methods) -> str:
+    """The scGPT baseline a JEPA-style arm is compared with: Track B's "scgpt" (MSE only) if present,
+    else the paper-matched "scgpt_paper" (MSE + ECS on <cls>)."""
+    return "scgpt" if "scgpt" in methods or "scgpt_paper" not in methods else "scgpt_paper"
+
+
 # fixed entity -> categorical slot (dataviz reference palette, light / dark); never by rank
 METHOD_COLOR = {"celljepa": ("#e87ba4", "#d55181"), "jepa": ("#2a78d6", "#3987e5"), "scgpt": ("#eb6834", "#d95926"),
-                "linear": ("#1baf7a", "#199e70"), "training_mean": ("#eda100", "#c98500"),
+                "scgpt_paper": ("#a0652d", "#b97a3f"), "linear": ("#1baf7a", "#199e70"), "training_mean": ("#eda100", "#c98500"),
                 "no_change": ("#8a8984", "#8a8984")}
 
 
@@ -129,7 +139,7 @@ def aggregate(ds, exp_dir: str, out_dir: str) -> dict:
     # ---------------------------------------------------------------- per-run table
     table = []
     for method, seed, rows, _, meta in entries:
-        rec = {"method": method, "seed": seed if method in ("jepa", "scgpt") else "-",
+        rec = {"method": method, "seed": seed if method in TRAINED_METHODS else "-",
                "checkpoint": meta.get("checkpoint", "-"), "split_hash": split_hash,
                "epochs_completed": meta.get("epochs_completed", "-"), "status": meta.get("status", "completed"),
                "elapsed_min": round(meta.get("elapsed_seconds", 0) / 60, 1),
@@ -170,8 +180,11 @@ def aggregate(ds, exp_dir: str, out_dir: str) -> dict:
         return np.array([seed_avg[m][c][k] for c in test])
 
     comparisons = {}
-    pairs = [(a, b) for a in ("celljepa", "jepa") for b in ("scgpt", "linear", "training_mean")]
-    pairs += [("celljepa", "jepa"), ("scgpt", "linear"), ("scgpt", "training_mean"), ("linear", "training_mean")]
+    sg = matched_scgpt(seed_avg)
+    pairs = [(a, b) for a in ("celljepa", "jepa") for b in (sg, "linear", "training_mean")]
+    pairs += [("celljepa", "jepa"), (sg, "linear"), (sg, "training_mean"), ("linear", "training_mean")]
+    if sg != "scgpt_paper":   # the paper-matched baseline, when run next to Track B's scgpt
+        pairs += [("celljepa", "scgpt_paper"), ("scgpt_paper", "scgpt")]
     for a, b in pairs:
         if a in seed_avg and b in seed_avg:
             comparisons[f"{a}_minus_{b}_delta_rmse"] = paired_bootstrap_diff(vec(a), vec(b))
@@ -229,14 +242,15 @@ def _claim(comp, methods) -> dict:
     arm = "celljepa" if "celljepa" in methods else "jepa"
     name = {"celljepa": "The Cell-JEPA fine-tuning recipe (unofficial reimplementation)",
             "jepa": "Our JEPA adaptation"}[arm]
-    if arm not in methods or "scgpt" not in methods:
+    sg = matched_scgpt(methods)
+    if arm not in methods or sg not in methods:
         return {"level": "baselines_only", "text": "Only baselines are complete; no model comparison can be claimed."}
     strong = [b for b in ("linear", "training_mean") if b in methods]
-    if better(f"{arm}_minus_scgpt_delta_rmse") and all(better(f"{arm}_minus_{b}_delta_rmse") for b in strong) and strong:
+    if better(f"{arm}_minus_{sg}_delta_rmse") and all(better(f"{arm}_minus_{b}_delta_rmse") for b in strong) and strong:
         txt = (f"{name} has lower held-out delta RMSE than matched scGPT and the simple baselines on this "
                "Adamson split (bootstrap over interventions; 2 training seeds, one fixed split).")
         lvl = "beats_strong_baselines"
-    elif better(f"{arm}_minus_scgpt_delta_rmse"):
+    elif better(f"{arm}_minus_{sg}_delta_rmse"):
         txt = (f"Preliminary: {name} improves delta RMSE over matched scGPT on this split, but not over all "
                "simple baselines.")
         lvl = "beats_matched_scgpt_only"
@@ -297,7 +311,7 @@ def _demo_payload(ds, entries, seed_avg, methods, summary, ctrl, claim, report):
             item["pred_all"][m] = np.round(p, 3).tolist()
             item["metrics"][m] = {k: (None if math.isnan(v) else round(v, 4)) for k, v in seed_avg[m][c].items()}
         conds.append(item)
-    ref = "scgpt" if "scgpt" in methods else methods[0]
+    ref = matched_scgpt(methods) if matched_scgpt(methods) in methods else methods[0]
     order = sorted(conds, key=lambda it: it["metrics"][ref]["delta_rmse"])
     return {"gene_names": list(ds.gene_names), "methods": methods, "labels": {m: METHOD_LABEL[m] for m in methods},
             "colors": {m: METHOD_COLOR[m] for m in methods},
@@ -509,7 +523,7 @@ def gears_tables(ds, entries, tol: float = 1e-6):
             ok_all &= ok
         chk["pass"] = bool(ok_all)
         checks.append(chk)
-        rec = {"method": method, "seed": seed if method in ("jepa", "scgpt") else "-", "path": meta.get("_path", "-")}
+        rec = {"method": method, "seed": seed if method in TRAINED_METHODS else "-", "path": meta.get("_path", "-")}
         for k in GEARS_KEYS:
             v = np.array([r[k] for r in rows], float)
             okv = ~np.isnan(v)
