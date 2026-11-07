@@ -299,6 +299,58 @@ from a weak secondary source — the *ratio* is solid, the absolute dollars need
 **The time column is the honest part: it does not move.** Growing cells and waiting on a sequencing
 core is the critical path whether you run 200 perturbations or 2,000.
 
+### Man-hours — a third axis, and it behaves differently again
+
+Wall-clock is flat and cost is linear. **Labor is neither: it batches in steps**, because the
+hands-on work is driven by the number of 10x *channels* you have to run, not by the cell count
+directly.
+
+The chain: cells → channels (~10,000–20,000 recovered per channel, GEM-X) → chip runs (8 channels
+per chip) → library-prep batches (**8–12 hours of labor per batch**, per a core facility's costing;
+a core typically preps up to 8 samples at a time).
+
+| | Perturbations | Cells | Channels | Chip runs | **Bench labor** |
+|---|---|---|---|---|---|
+| **Today** | 2,000 | ~600,000 | 30–60 | 4–8 | **~32–96 h** |
+| **With model** | 200 | ~60,000 | 3–6 | 1 | **~8–12 h** |
+| **Difference** | — | 10× | 10× | 4–8× | **~4–8× less** |
+
+⚠️ These are *composed* estimates — multiplying published component figures (cells/channel,
+channels/chip, hours/batch), not a measured end-to-end study. The ratio is more trustworthy than
+the absolute hours.
+
+**Why the labor saving (4–8×) is smaller than the cost saving (10×):** batching. One chip run costs
+the same labor whether you fill 3 channels or 8, so the small screen wastes capacity and pays a
+fixed floor. Automation narrows the gap further — an automated library-prep workflow reports a
+**75% hands-on reduction** across up to 48 reactions, which disproportionately helps the *large*
+screen, since that is the one with enough batches to amortise the setup.
+
+### Labor the model *adds*
+
+The model side is not free, and two of these cut against us:
+
+| Item | Scale |
+|---|---|
+| Building and validating the model | **One-time, large** — essentially this entire project |
+| Running inference once trained | ~hours of compute, ~1 h human |
+| Deciding whether to trust a prediction | Judgment, per use |
+| **Interpreting 2,000 profiles instead of 200** | **Goes UP** — interpretation scales with what you look at, not with how you obtained it |
+
+That last row matters: we do not reduce the analysis burden, we increase it. The lab now has 1,800
+predicted profiles to make sense of. Whether that is a benefit or a burden depends entirely on
+whether the predictions are trustworthy enough to act on — which is assumption 5 again.
+
+### All three axes at once
+
+| Axis | Today → with model | Why |
+|---|---|---|
+| **Wall-clock** | **No change** (12–20 wk) | Cell growth + core queue is the critical path regardless of scale |
+| **Cost** | **~10× less** | Linear in perturbations: cells × reads |
+| **Bench labor** | **~4–8× less** | Batches in steps of 8 channels; fixed floor per run |
+| **Cells required** | **~10× fewer** | Linear; **the only axis no budget can substitute for** |
+| **Analysis labor** | **Increases** | More profiles to interpret, plus trust judgments |
+
+
 ### What actually changes, ranked by how defensible it is
 
 | Branch | Value | Honest strength |
@@ -327,7 +379,8 @@ Every one is currently unproven:
 
 > We do not remove a step and we do not make anyone faster — the screen still happens, and it still
 > takes 12–20 weeks. What changes is that a fixed experimental budget covers roughly 10× more
-> perturbations, and that a cell-limited sample becomes workable at all.
+> perturbations, with ~4–8× less bench labor, and that a cell-limited sample becomes workable at
+> all. Analysis effort goes up, not down.
 
 Three things to keep attached to that claim:
 
@@ -339,3 +392,10 @@ Three things to keep attached to that claim:
    screen trains a model good enough to extend to 1,800 is the single most load-bearing untested
    assumption in this document.
 
+
+### Sources added for the labor model
+
+- [10x Chromium GEM-X technology (cells per channel, recovery)](https://www.10xgenomics.com/technology)
+- [10x instrument comparison tech note](https://cdn.10xgenomics.com/image/upload/v1660261285/support-documents/CG000428_ChromiumInstrumentDataComparisonTN_RevC.pdf)
+- [Core facility: ~8–12 h labor per library-prep batch, up to 8 samples at a time](https://biotech.illinois.edu/dna-services-core/dna-10x-single-cell-submission-requirements-and-other-information/)
+- [Automated scRNA-seq library prep: 75% hands-on reduction, up to 48 reactions](https://pubmed.ncbi.nlm.nih.gov/35058211/)
