@@ -119,6 +119,9 @@ class Dataset:
     manifest: dict
     eval_controls: dict           # condition -> list[int] control cell indices used as eval inputs
     de_idx: dict                  # condition -> list[int] top-20 non-dropout DE gene positions (eval only)
+    # condition -> list[int] top-20 positions of uns['rank_genes_groups_cov_all'] (GEARS "_de" metrics;
+    # eval only). Optional: caches built before this field existed have None (-> metric NaN).
+    de_rank20: dict | None = None
 
     @property
     def n_genes(self) -> int:
@@ -141,6 +144,89 @@ class Dataset:
 
     def observed_mean(self, condition: str) -> np.ndarray:
         return self.X[self.cells_of(condition)].mean(0)
+
+
+def _positions(genes, pos: dict, what: str, cond: str) -> list[int]:
+    out = []
+    for g in genes:
+        g = g.decode() if isinstance(g, bytes) else str(g)
+        if g not in pos:
+            raise KeyError(f"{cond}: {what} gene {g!r} not in cache gene ids")
+        out.append(pos[g])
+    return out
+
+
+def de_gene_sets(ad, conditions: list[str], gene_ids: list[str], strict_rank: bool = True) -> tuple[dict, dict | None]:
+    """GEARS evaluation gene sets as positions into ``gene_ids`` (evaluation only).
+
+    Returns (de_idx, de_rank20):
+      * de_idx: ``uns['top_non_dropout_de_20'][condition_name]`` (GEARS top20_de_non_dropout);
+      * de_rank20: ``uns['rank_genes_groups_cov_all'][condition_name][:20]`` (GEARS pearson_de).
+    With strict_rank=False a missing / short ``rank_genes_groups_cov_all`` gives de_rank20=None
+    (the optional metric becomes NaN) instead of failing.
+    """
+    name_by_cond = dict(zip(ad.obs["condition"].astype(str), ad.obs["condition_name"].astype(str)))
+    pos = {g: i for i, g in enumerate(gene_ids)}
+    de_idx, de_rank20 = {}, {}
+    for c in conditions:
+        key = name_by_cond[c]
+        de_idx[c] = _positions(ad.uns["top_non_dropout_de_20"][key], pos, "top_non_dropout_de_20", c)
+    try:
+        for c in conditions:
+            key = name_by_cond[c]
+            de_rank20[c] = _positions(list(ad.uns["rank_genes_groups_cov_all"][key])[:20], pos,
+                                      "rank_genes_groups_cov_all", c)
+            if len(de_rank20[c]) != 20:
+                raise ValueError(f"{c}: rank_genes_groups_cov_all has {len(de_rank20[c])} < 20 genes")
+    except (KeyError, ValueError):
+        if strict_rank:
+            raise
+        de_rank20 = None
+    return de_idx, de_rank20
+
+
+def _valid_de_rank20(de_rank20: dict, split: dict, n_genes: int) -> bool:
+    need = set(split["val"] + split["test"])
+    return (need <= set(de_rank20)
+            and all(len(v) == 20 and all(0 <= int(i) < n_genes for i in v) for v in de_rank20.values()))
+
+
+def write_de_rank20(h5ad_path: str, cache_dir: str, force: bool = False) -> dict:
+    """Supplement an existing cache with ``de_rank20.json`` WITHOUT touching any other cache file.
+
+    Verifies the h5ad's ordered gene ids match the cache (so positions are valid) and that the
+    regenerated ``top_non_dropout_de_20`` positions equal the cached ``de_idx.json``. An existing
+    file is kept only if it covers every val/test condition with 20 in-range positions.
+    """
+    import scanpy as sc
+
+    out = os.path.join(cache_dir, "de_rank20.json")
+    with open(os.path.join(cache_dir, "genes.json")) as f:
+        gene_ids = json.load(f)["gene_ids"]
+    with open(os.path.join(cache_dir, "split.json")) as f:
+        split = json.load(f)
+    if os.path.exists(out) and not force:
+        with open(out) as f:
+            existing = json.load(f)
+        if not _valid_de_rank20(existing, split, len(gene_ids)):
+            raise RuntimeError(f"{out} exists but does not match this cache's split/genes; rerun with force")
+        return {"path": out, "written": False, "n_conditions": len(existing)}
+    with open(os.path.join(cache_dir, "de_idx.json")) as f:
+        cached_de_idx = json.load(f)
+    ad = sc.read_h5ad(h5ad_path, backed="r")
+    try:
+        if ad.var.index.astype(str).tolist() != gene_ids:
+            raise RuntimeError("h5ad gene order differs from cache genes.json; refusing to write de_rank20")
+        de_idx, de_rank20 = de_gene_sets(ad, split["val"] + split["test"], gene_ids, strict_rank=True)
+    finally:
+        ad.file.close()
+    if de_idx != cached_de_idx:
+        raise RuntimeError("regenerated top_non_dropout_de_20 differs from cached de_idx.json")
+    tmp = out + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(de_rank20, f, indent=2)
+    os.replace(tmp, out)
+    return {"path": out, "written": True, "n_conditions": len(de_rank20), "h5ad_sha256": sha256(h5ad_path)}
 
 
 def build_cache(h5ad_path: str, out_dir: str, split_seed: int, n_eval_controls: int,
@@ -182,12 +268,8 @@ def build_cache(h5ad_path: str, out_dir: str, split_seed: int, n_eval_controls: 
 
     # Evaluation-only responsive genes (GEARS top-20 non-dropout DE, computed by GEARS on
     # the processed dataset). Never used as model input or for tuning.
-    name_by_cond = dict(zip(ad.obs["condition"], ad.obs["condition_name"].astype(str)))
-    pos = {g: i for i, g in enumerate(gene_ids)}
-    de_idx = {}
-    for c in split["val"] + split["test"]:
-        key = name_by_cond[c]
-        de_idx[c] = [pos[g] for g in ad.uns["top_non_dropout_de_20"][key]]
+    # de_rank20 is optional (GEARS "_de" metrics); a dataset without it still builds a cache.
+    de_idx, de_rank20 = de_gene_sets(ad, split["val"] + split["test"], gene_ids, strict_rank=False)
 
     counts = {c: int((conditions == c).sum()) for c in all_conds}
     pert_targets = {c: target_gene(c) for c in all_conds if c != CTRL}
@@ -231,6 +313,7 @@ def build_cache(h5ad_path: str, out_dir: str, split_seed: int, n_eval_controls: 
                              f"without replacement (seed {eval_control_seed}); identical for every method",
         "control_reference": "mean of all control cells (control pool contains no treated outcomes)",
         "responsive_genes": "GEARS uns['top_non_dropout_de_20'] — evaluation only",
+        "gears_de_genes": "GEARS uns['rank_genes_groups_cov_all'][:20] (de_rank20.json) — evaluation only",
         "ordered_gene_ids_sha256": hashlib.sha256("\n".join(gene_ids).encode()).hexdigest(),
     }
 
@@ -243,6 +326,8 @@ def build_cache(h5ad_path: str, out_dir: str, split_seed: int, n_eval_controls: 
     dump("split.json", split)
     dump("eval_controls.json", eval_controls)
     dump("de_idx.json", de_idx)
+    if de_rank20 is not None:
+        dump("de_rank20.json", de_rank20)
     dump("manifest.json", manifest)
     return manifest
 
@@ -263,4 +348,5 @@ def load_cache(cache_dir: str, mmap: bool = False) -> Dataset:
         manifest=jload("manifest.json"),
         eval_controls=jload("eval_controls.json"),
         de_idx=jload("de_idx.json"),
+        de_rank20=jload("de_rank20.json") if os.path.exists(os.path.join(cache_dir, "de_rank20.json")) else None,
     )
