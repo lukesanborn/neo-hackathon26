@@ -1,7 +1,7 @@
 """Track A aggregation — Cell-JEPA reimplemented from the paper (unofficial).
 
 Track A fine-tunes two kidney-pretrained checkpoints (JEPA- and scGPT-objective) with two
-fine-tuning methods (`scgpt`, `celljepa`) and several seeds inside ONE experiment directory,
+fine-tuning methods (`scgpt_paper`, `celljepa`) and several seeds inside ONE experiment directory,
 so runs must be keyed by (checkpoint, method, seed) — `src.report.collect_runs` keys by
 (method, seed) and would silently collide. Everything here is numpy-only and reads saved
 evaluation outputs; it never needs the dataset cache (the held-out condition set is taken from
@@ -26,21 +26,26 @@ from ..report import METHOD_COLOR, _fmt, _read_json, _read_rows, _write_csv
 TRACK_LABEL = "Track A — Cell-JEPA reimplemented from the paper (unofficial)"
 DEFAULT_CKPT = "scGPT_human"  # train_blackwell's default `ckpt`
 PAPER_ARM = "jepa_kidney/celljepa"      # paper: kidney-JEPA pretraining + Cell-JEPA fine-tuning
-MATCHED_ARM = "scgpt_kidney/scgpt"      # paper: kidney-scGPT pretraining + scGPT fine-tuning
+MATCHED_ARM = "scgpt_kidney/scgpt_paper"  # paper: kidney-scGPT pretraining + scGPT fine-tuning (MSE + ECS)
+ABLATION_PT_ARM = "jepa_kidney/scgpt_paper"   # kidney-JEPA pretraining + scGPT fine-tuning
+ABLATION_FT_ARM = "scgpt_kidney/celljepa"     # kidney-scGPT pretraining + Cell-JEPA fine-tuning
 BASELINES = ["linear", "training_mean", "no_change"]
+# Track A fine-tuning methods (modal_track_a.FT_METHODS). Runs of any other method in the Track A experiment
+# (e.g. pre-scgpt_paper MSE-only "scgpt" runs) are reported in the run status but never aggregated.
+FT_METHODS = ("scgpt_paper", "celljepa")
 NON_METRIC = {"condition", "n_cells"}
 
-ARM_ORDER = [PAPER_ARM, MATCHED_ARM, "jepa_kidney/scgpt", "scgpt_kidney/celljepa", *BASELINES]
+ARM_ORDER = [PAPER_ARM, MATCHED_ARM, ABLATION_PT_ARM, ABLATION_FT_ARM, *BASELINES]
 ARM_LABEL = {
     PAPER_ARM: "Kidney-JEPA PT + Cell-JEPA FT (paper's method, reimpl.)",
-    MATCHED_ARM: "Kidney-scGPT PT + scGPT FT (matched)",
-    "jepa_kidney/scgpt": "Kidney-JEPA PT + scGPT FT (ablation)",
-    "scgpt_kidney/celljepa": "Kidney-scGPT PT + Cell-JEPA FT (ablation)",
+    MATCHED_ARM: "Kidney-scGPT PT + scGPT FT (matched; MSE + ECS)",
+    ABLATION_PT_ARM: "Kidney-JEPA PT + scGPT FT (ablation)",
+    ABLATION_FT_ARM: "Kidney-scGPT PT + Cell-JEPA FT (ablation)",
     "linear": "Linear (gene emb.)", "training_mean": "Training mean", "no_change": "No change",
 }
 # fixed entity -> categorical slot (dataviz reference palette, light / dark); never by rank
 ARM_COLOR = {PAPER_ARM: METHOD_COLOR["jepa"], MATCHED_ARM: METHOD_COLOR["scgpt"],
-             "jepa_kidney/scgpt": ("#e87ba4", "#d55181"), "scgpt_kidney/celljepa": ("#6250d6", "#9085e9"),
+             ABLATION_PT_ARM: ("#e87ba4", "#d55181"), ABLATION_FT_ARM: ("#6250d6", "#9085e9"),
              **{b: METHOD_COLOR[b] for b in BASELINES}}
 OTHER_COLOR = ("#e34948", "#e66767")
 
@@ -57,9 +62,9 @@ PUBLISHED_LABEL = {MATCHED_ARM: "scGPT", PAPER_ARM: "Cell-JEPA"}
 
 COMPARISONS = [  # (A, B, why) — A − B; negative delta RMSE difference favours A
     (PAPER_ARM, MATCHED_ARM, "paper's comparison (pretraining + fine-tuning both differ)"),
-    ("jepa_kidney/scgpt", MATCHED_ARM, "pretraining effect, scGPT fine-tuning held fixed"),
-    ("scgpt_kidney/celljepa", MATCHED_ARM, "fine-tuning effect, kidney-scGPT checkpoint held fixed"),
-    (PAPER_ARM, "jepa_kidney/scgpt", "fine-tuning effect, kidney-JEPA checkpoint held fixed"),
+    (ABLATION_PT_ARM, MATCHED_ARM, "pretraining effect, scGPT fine-tuning held fixed"),
+    (ABLATION_FT_ARM, MATCHED_ARM, "fine-tuning (JEPA term) effect, kidney-scGPT checkpoint held fixed"),
+    (PAPER_ARM, ABLATION_PT_ARM, "fine-tuning (JEPA term) effect, kidney-JEPA checkpoint held fixed"),
     (PAPER_ARM, "linear", "vs strong simple baseline"),
     (MATCHED_ARM, "linear", "vs strong simple baseline"),
     (PAPER_ARM, "training_mean", "vs simple baseline"),
@@ -89,13 +94,15 @@ def arm_color(arm: str):
     return ARM_COLOR.get(arm, OTHER_COLOR)
 
 
-def collect_track_a_runs(exp_dir: str, split_hash: str | None, default_ckpt: str | None = None):
+def collect_track_a_runs(exp_dir: str, split_hash: str | None, default_ckpt: str | None = None,
+                         methods=None):
     """Latest completed run per (checkpoint, method, seed); every run's status is reported.
 
     Identity comes from each run's config.json (`ckpt`, `method`, `seed`), falling back to
     metrics.json — never from the directory name. A run without a recorded `ckpt` is excluded
     (unless `default_ckpt` is given, e.g. for single-checkpoint context experiments): falling back
-    to a default would collapse the two kidney checkpoints onto one key.
+    to a default would collapse the two kidney checkpoints onto one key. With `methods`, runs of
+    other fine-tuning methods are excluded (status `excluded_method_not_in_track_a`).
     """
     status, chosen = [], {}
     for d in sorted(glob.glob(os.path.join(exp_dir, "runs", "*"))):
@@ -123,6 +130,8 @@ def collect_track_a_runs(exp_dir: str, split_hash: str | None, default_ckpt: str
                 row["status"] = "excluded_unidentified"
             elif split_hash is not None and m.get("split_hash") != split_hash:
                 row["status"] = "excluded_split_mismatch"
+            elif methods is not None and method not in methods:
+                row["status"] = "excluded_method_not_in_track_a"
             elif missing:
                 row["status"] = "excluded_missing_" + "+".join(missing)
             elif m.get("status") in ("completed", "stopped_by_time_budget"):
@@ -151,7 +160,7 @@ def _mean_defined(v):
     return (float(v[ok].mean()) if ok.any() else float("nan")), int(ok.sum())
 
 
-def _load_entries(exp_dir, split_hash, default_ckpt=None):
+def _load_entries(exp_dir, split_hash, default_ckpt=None, methods=None):
     """[(arm, ckpt, method, seed, rows, meta, run_dir)] for baselines + chosen Track A runs."""
     entries = []
     for bdir in sorted(glob.glob(os.path.join(exp_dir, "baselines", "*"))):
@@ -165,7 +174,7 @@ def _load_entries(exp_dir, split_hash, default_ckpt=None):
             raise AssertionError(f"baseline {bdir} split mismatch ({meta['split_hash']} != {split_hash})")
         name = meta.get("method", os.path.basename(bdir))
         entries.append((name, "-", name, 0, _rows_with_percell(bdir), meta, bdir))
-    run_status, chosen = collect_track_a_runs(exp_dir, split_hash, default_ckpt)
+    run_status, chosen = collect_track_a_runs(exp_dir, split_hash, default_ckpt, methods)
     for (ck, method, seed), d in sorted(chosen.items()):
         entries.append((arm_id(ck, method), ck, method, seed, _rows_with_percell(d),
                         _read_json(os.path.join(d, "metrics.json")), d))
@@ -286,7 +295,7 @@ def aggregate_track_a(exp_dir: str, out_dir: str, context_exp_dirs=(), ckpt_root
     os.makedirs(out_dir, exist_ok=True)
     ep = os.path.join(exp_dir, "experiment.json")
     split_hash = _read_json(ep)["split_hash"] if os.path.exists(ep) else None
-    entries, run_status, split_hash = _load_entries(exp_dir, split_hash)
+    entries, run_status, split_hash = _load_entries(exp_dir, split_hash, methods=FT_METHODS)
     if not entries:
         raise RuntimeError(f"nothing to aggregate in {exp_dir} (no baselines, no completed runs)")
     test = sorted(r["condition"] for r in entries[0][4])
@@ -464,7 +473,7 @@ def _write_markdown(path, report, table):
 
 def write_synthetic_layout(exp_dir: str, n_test: int = 6, seeds=(1, 2), with_gears: bool = True,
                            ckpt_root: str = "/vol/trackA/checkpoints", seed: int = 0) -> dict:
-    """Fake baselines + 2 checkpoints x {scgpt, celljepa} x seeds, with colliding (method, seed)."""
+    """Fake baselines + 2 checkpoints x {scgpt_paper, celljepa} x seeds, with colliding (method, seed)."""
     import csv
 
     rng = np.random.default_rng(seed)
@@ -496,8 +505,8 @@ def write_synthetic_layout(exp_dir: str, n_test: int = 6, seeds=(1, 2), with_gea
 
     for i, b in enumerate(BASELINES):
         write(os.path.join(exp_dir, "baselines", b), {"method": b}, 0.30 + 0.02 * i)
-    levels = {("jepa_kidney", "celljepa"): 0.20, ("scgpt_kidney", "scgpt"): 0.22,
-              ("jepa_kidney", "scgpt"): 0.21, ("scgpt_kidney", "celljepa"): 0.23}
+    levels = {tuple(a.split("/")): lvl for a, lvl in
+              ((PAPER_ARM, 0.20), (MATCHED_ARM, 0.22), (ABLATION_PT_ARM, 0.21), (ABLATION_FT_ARM, 0.23))}
     tags = {"jepa_kidney": "kidneyjepa_v1", "scgpt_kidney": "kidneyscgpt_v1"}
     for (ck, method), lvl in levels.items():
         for s in seeds:

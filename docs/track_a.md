@@ -9,7 +9,11 @@ show Track B only in a separate "for context only" section.
 
 Pipeline: CELLxGENE Census 2023-05-15 kidney cells → matched kidney pretraining (JEPA objective
 and scGPT objective, identical schedule) → Adamson perturbation fine-tuning of each checkpoint with
-the `scgpt` and `celljepa` recipes (seeds 1, 2) → Track A report. Separately, we run the Cell-JEPA
+the `scgpt_paper` and `celljepa` recipes (seeds 1, 2) → Track A report. `scgpt_paper` is the
+paper's scGPT fine-tuning baseline (§2.5 / App. E.3: MSE + 0.8·ECS on `<cls>`) — the `celljepa`
+objective without the JEPA term, on the identical code path, init, pairing and RNG streams — so
+the two fine-tuning arms differ only in the JEPA loss. (Track B's `scgpt` method, MSE only and
+no `<cls>`, is unchanged.) Separately, we run the Cell-JEPA
 fine-tuning recipe on public `scGPT_human` (experiment `adamson_celljepa_public_v1`).
 
 ## Apps
@@ -56,9 +60,11 @@ modal run --detach modal_track_a.py --stage pretrain --confirm-pretrain \
 #    prints the two FunctionCall ids and exits (use --wait yes to block); later:
 modal run modal_track_a.py --stage collect --call-ids <id1>,<id2>
 
-# 5. fine-tune: prepare(adamson_trackA_v1) then 2 checkpoints x {scgpt, celljepa} x seeds {1,2}
+# 5. fine-tune: prepare(adamson_trackA_v1) then 2 checkpoints x {scgpt_paper, celljepa} x seeds {1,2}
 #    = 8 runs on B300, max 4 concurrent; refuses until both checkpoints have args.json,
-#    best_model.pt, vocab.json
+#    best_model.pt, vocab.json. Redeploy jepa-perturb from this checkout first: preflight checks
+#    `scgpt_paper` against the LOCAL src/train.py METHODS, not the deployed app
+#    (`modal deploy modal_app.py`)
 modal run --detach modal_track_a.py --stage finetune
 
 # 6. Cell-JEPA fine-tuning recipe on public scGPT_human (separate experiment, seeds 1,2)
@@ -85,8 +91,8 @@ and `--pilot-kwargs '{...}'` (passed through verbatim), `--usd-per-gpu-hour`, `-
 /vol/trackA/checkpoints/{jepa,scgpt}_kidney/   args.json, best_model.pt, vocab.json
 /vol/experiments/adamson_trackA_v1/
   baselines/{no_change,training_mean,linear}/   same split (GEARS simulation seed 1) as Track B
-  runs/<method>_s<seed>_kidneyjepa_v1/          ckpt=/vol/trackA/checkpoints/jepa_kidney, input bins50
-  runs/<method>_s<seed>_kidneyscgpt_v1/         ckpt=/vol/trackA/checkpoints/scgpt_kidney, input bins50
+  runs/{scgpt_paper,celljepa}_s<seed>_kidneyjepa_v1/    ckpt=/vol/trackA/checkpoints/jepa_kidney, input bins50
+  runs/{scgpt_paper,celljepa}_s<seed>_kidneyscgpt_v1/   ckpt=/vol/trackA/checkpoints/scgpt_kidney, input bins50
   report_track_a/   results.md, report.json, results_*.csv, per_intervention_all.csv, run_status.csv,
                     track_a_delta_rmse.png
 /vol/experiments/adamson_celljepa_public_v1/runs/celljepa_s<seed>_v1/   public scGPT_human, log1p
@@ -98,10 +104,12 @@ for this experiment.
 
 ### Key comparison
 
-The paper's comparison: **kidney-JEPA pretraining + Cell-JEPA fine-tuning** vs **kidney-scGPT
-pretraining + scGPT fine-tuning** (matched schedule), plus baselines. The two cross arms
-(kidney-JEPA + scGPT FT, kidney-scGPT + Cell-JEPA FT) separate the pretraining and fine-tuning
-effects. We report our primary delta RMSE and, when `per_intervention.csv` has them, the GEARS
+The paper's comparison: **kidney-JEPA pretraining + Cell-JEPA fine-tuning** (`jepa_kidney/celljepa`)
+vs **kidney-scGPT pretraining + scGPT fine-tuning** (`scgpt_kidney/scgpt_paper`; matched schedule),
+plus baselines. As in the paper (§2.5), both fine-tuning objectives share MSE + 0.8·ECS on the
+student `<cls>`; `celljepa` adds only the 1.0·JEPA term. The two cross arms
+(`jepa_kidney/scgpt_paper`, `scgpt_kidney/celljepa`) separate the pretraining and fine-tuning
+(JEPA-term) effects. We report our primary delta RMSE and, when `per_intervention.csv` has them, the GEARS
 columns next to the published Adamson values:
 
 | | Pearson | Pearson DE | top-20 DE (non-dropout) | Δ Pearson | Δ Pearson DE | Δ top-20 DE |
@@ -132,7 +140,7 @@ against the PDF** before quoting.
 | EMA momentum (teacher) | Unspecified | 0.996 | I-JEPA / BYOL-style default |
 | Predictor width / depth | Unspecified | 2-layer MLP, hidden = d_model (512) | Smallest standard choice; matches embedding width |
 | Projector | Mentioned for fine-tuning | Projector used in fine-tuning only, not pretraining | Our reading of the method section |
-| ECS term | Supervised contrastive with cell-type positives | scGPT's unsupervised ECS, threshold 0.3 | Adamson (K562 only) has no cell-type labels to form positives |
+| ECS term | Supervised contrastive with cell-type positives; weight 0.8 in both the Cell-JEPA and the scGPT fine-tuning objectives (§2.5, App. E.3) | scGPT's unsupervised ECS, threshold 0.3, weight 0.8 on student `<cls>` in both `celljepa` and the baseline `scgpt_paper` (as the paper, the baseline also uses ECS) | Adamson (K562 only) has no cell-type labels to form positives |
 | Control ↔ perturbed pairing | Unspecified | Fixed per-seed random pairing (same in every arm) | Deterministic and matched across arms |
 | Fine-tuning input scale | Unspecified (bins vs log1p) | `bins50` for kidney checkpoints; `log1p` for public scGPT_human | Kidney models were pretrained on binned values; public run matches Track B |
 | 50 vs 51 bins | Ambiguous (n_bins 51 incl. zero vs 50 non-zero) | 50 non-zero bins + zero token (scGPT `n_bins=51` convention) | Matches scGPT preprocessing |

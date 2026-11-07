@@ -4,7 +4,8 @@ Chains the separately deployed apps via `modal.Function.from_name`:
 
     census (jepa-census) -> pretrain pilot (jepa-pretrain; prints hours/cost, STOPS)
     -> pretrain x2 (jepa-pretrain; needs --confirm-pretrain + explicit schedule)
-    -> fine-tune each kidney checkpoint with {scgpt, celljepa} x seeds {1,2} (jepa-perturb)
+    -> fine-tune each kidney checkpoint with {scgpt_paper, celljepa} x seeds {1,2} (jepa-perturb)
+       (scgpt_paper = the paper's scGPT FT baseline, MSE + 0.8*ECS on <cls>: celljepa minus the JEPA term)
     -> Track A report (this app, CPU) under experiment `adamson_trackA_v1`.
 
 Track A and Track B never share a matched comparison; Track B appears only in the report's
@@ -51,7 +52,7 @@ SPLIT_SEED = 1                              # same GEARS simulation split as Tra
 GPU = "B300"
 MAX_FT_CONCURRENCY = 4
 PT_OBJECTIVES = ("scgpt", "jepa")
-FT_METHODS = ("scgpt", "celljepa")
+FT_METHODS = ("scgpt_paper", "celljepa")   # paper-matched pair: differ only in the JEPA term
 FT_INPUT_TRANSFORM = "bins50"               # kidney models were pretrained on 50-bin values
 PUBLIC_INPUT_TRANSFORM = "log1p"
 PUBLIC_CKPT = "scGPT_human"
