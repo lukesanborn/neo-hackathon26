@@ -1,0 +1,22 @@
+{
+ "T2 zeroshot scgpt_kidney_lr3e5": "fc-01M6VTSJW1PZCE67AFKDTGGK3A",
+ "T3 adamson scgpt_lr3e5 scgpt_paper s1": "fc-01M6VTSKBC6465BVJH25K4N2R4",
+ "T3 adamson scgpt_lr3e5 scgpt_paper s2": "fc-01M6VTSKEQ50FZKYHDYK857KHX",
+ "T3 adamson scgpt_lr3e5 celljepa s1": "fc-01M6VTSKJB58AY5NQRV04T8MYM",
+ "T3 adamson scgpt_lr3e5 celljepa s2": "fc-01M6VTSKWBZVBM654HVZDKHRE2",
+ "T2 zeroshot jepa_kidney_lr3e5": "fc-01M6VTSM0H1KAVT8DDC7DTQ8EF",
+ "T3 adamson jepa_lr3e5 scgpt_paper s1": "fc-01M6VTSM4791KTHN56ACPXHDRM",
+ "T3 adamson jepa_lr3e5 scgpt_paper s2": "fc-01M6VTSMD43ZJMR9TT9MDK801Z",
+ "T3 adamson jepa_lr3e5 celljepa s1": "fc-01M6VTSMH9GX58SMP6Z7GTJTGA",
+ "T3 adamson jepa_lr3e5 celljepa s2": "fc-01M6VTSMN99YMZ6FE9QHQXYB1X",
+ "T2 zeroshot jepa_kidney_lr3e5_token": "fc-01M6VTSMWQ40PJMKPT2PEQT5KZ",
+ "T3 adamson jepa_lr3e5_token scgpt_paper s1": "fc-01M6VTSN0NJD57RFN3FS1K751P",
+ "T3 adamson jepa_lr3e5_token scgpt_paper s2": "fc-01M6VTSN5T19RTP67C9BA8W8Y8",
+ "T3 adamson jepa_lr3e5_token celljepa s1": "fc-01M6VTSND3X0YAF5DSWVBT1BMH",
+ "T3 adamson jepa_lr3e5_token celljepa s2": "fc-01M6VTSNGY5CCW0A10MAYMG89D",
+ "T2 zeroshot jepa_kidney_lr3e5_center": "fc-01M6VTSNMWWSXKN4JS45SQ8CQR",
+ "T3 adamson jepa_lr3e5_center scgpt_paper s1": "fc-01M6VTSNXA6STKGB6YDJDG3QFA",
+ "T3 adamson jepa_lr3e5_center scgpt_paper s2": "fc-01M6VTSP0PAXQYTRG5CDVYKP2E",
+ "T3 adamson jepa_lr3e5_center celljepa s1": "fc-01M6VTSP486H7352DPMSZC0NV3",
+ "T3 adamson jepa_lr3e5_center celljepa s2": "fc-01M6VTSP7N2NRFE8Q2F5YSNRT9"
+}
