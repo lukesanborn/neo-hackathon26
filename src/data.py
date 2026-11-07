@@ -332,6 +332,21 @@ def build_cache(h5ad_path: str, out_dir: str, split_seed: int, n_eval_controls: 
     return manifest
 
 
+def percell_pairs(ds: "Dataset", condition: str, n_cells: int, seed: int = 0):
+    """Fixed (treated, control) cell pairs for paper-style per-cell scoring.
+
+    Up to n_cells treated cells of `condition`, each paired with one control cell. The draw depends
+    only on (seed, condition), so every method is scored on identical pairs. Controls contain no
+    treated outcomes; treated cells are used only as evaluation targets."""
+    import zlib
+
+    rng = np.random.default_rng([seed, zlib.crc32(condition.encode())])
+    cells = ds.cells_of(condition)
+    treated = np.sort(rng.choice(cells, size=min(n_cells, len(cells)), replace=False))
+    ctrl = rng.choice(ds.ctrl_idx, size=len(treated), replace=True)
+    return treated, ctrl
+
+
 def load_cache(cache_dir: str, mmap: bool = False) -> Dataset:
     def jload(name):
         with open(os.path.join(cache_dir, name)) as f:

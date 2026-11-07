@@ -164,12 +164,24 @@ def _load_entries(exp_dir, split_hash, default_ckpt=None):
         if meta["split_hash"] != split_hash:
             raise AssertionError(f"baseline {bdir} split mismatch ({meta['split_hash']} != {split_hash})")
         name = meta.get("method", os.path.basename(bdir))
-        entries.append((name, "-", name, 0, _read_rows(os.path.join(bdir, "per_intervention.csv")), meta, bdir))
+        entries.append((name, "-", name, 0, _rows_with_percell(bdir), meta, bdir))
     run_status, chosen = collect_track_a_runs(exp_dir, split_hash, default_ckpt)
     for (ck, method, seed), d in sorted(chosen.items()):
-        entries.append((arm_id(ck, method), ck, method, seed, _read_rows(os.path.join(d, "per_intervention.csv")),
+        entries.append((arm_id(ck, method), ck, method, seed, _rows_with_percell(d),
                         _read_json(os.path.join(d, "metrics.json")), d))
     return entries, run_status, split_hash
+
+
+def _rows_with_percell(d: str) -> list[dict]:
+    """per_intervention.csv rows, merged (by condition) with per_intervention_percell.csv if present."""
+    rows = _read_rows(os.path.join(d, "per_intervention.csv"))
+    pc = os.path.join(d, "per_intervention_percell.csv")
+    if os.path.exists(pc):
+        extra = {r["condition"]: r for r in _read_rows(pc)}
+        for r in rows:
+            r.update({k: v for k, v in extra.get(r["condition"], {}).items()
+                      if k.startswith("percell_")})
+    return rows
 
 
 def _summarise_arms(entries, test):
@@ -317,7 +329,9 @@ def aggregate_track_a(exp_dir: str, out_dir: str, context_exp_dirs=(), ckpt_root
     for arm, pub in PUBLISHED.items():
         ours = next((r for r in summary if r["arm"] == arm), None)
         published.append({"arm": arm, "paper_row": PUBLISHED_LABEL[arm],
-                          "metrics": {k: {"published": v, "ours": (ours or {}).get(k)} for k, v in pub.items()}})
+                          "metrics": {k: {"published": v, "ours": (ours or {}).get(k),
+                                          "ours_percell": (ours or {}).get(k.replace("gears_", "percell_"))}
+                                      for k, v in pub.items()}})
 
     claim = _claim(comparisons, arms)
     ckpts = sorted({e[1] for e in entries if e[1] != "-"})
@@ -400,12 +414,17 @@ def _write_markdown(path, report, table):
                      f"{_fmt(v['ci_high'])}] | {v['n']} | {_fmt(v['frac_a_lower'], 2)} |")
     L += ["", "## GEARS-style metrics vs published (Adamson)", "",
           f"Published values: {report['published_source']}. Column correspondence is our reading of the paper's "
-          "table; the paper's Δ definition is ambiguous (we report GEARS mean-based Δ).", ""]
+          "table; the paper's evaluation is ambiguous. We report two readings: GEARS mean-based (correlate "
+          "population-mean prediction with population-mean truth) and per-cell (correlate each prediction with "
+          "one paired treated cell, Δ against that cell's own control input, then average). Mean-based scores "
+          "are near-saturated (no-change ≈ 0.99 Pearson), so the published values (~0.9) are more consistent "
+          "with a per-cell protocol; neither reading is confirmed.", ""]
     if report["gears_columns"]:
-        L += ["| Arm (paper row) | metric | ours | published |", "|---|---|---|---|"]
+        L += ["| Arm (paper row) | metric | ours (mean-based) | ours (per-cell) | published |", "|---|---|---|---|---|"]
         for p in report["published"]:
             for k, v in p["metrics"].items():
-                L.append(f"| {arm_label(p['arm'])} ({p['paper_row']}) | {k} | {_fmt(v['ours'], 3)} | {v['published']:.3f} |")
+                L.append(f"| {arm_label(p['arm'])} ({p['paper_row']}) | {k.replace('gears_', '')} | "
+                         f"{_fmt(v['ours'], 3)} | {_fmt(v.get('ours_percell'), 3)} | {v['published']:.3f} |")
     else:
         L.append("_No `gears_*` columns in per_intervention.csv — GEARS metrics not available for these runs._")
     L += ["", "## Individual runs", "",

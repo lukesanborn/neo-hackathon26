@@ -108,7 +108,7 @@ const dark = () => document.documentElement.dataset.theme === "dark" ||
   (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
 const col = (m) => D.colors[m][dark() ? 1 : 0];
 const fmt = (v, n = 4) => v === null || v === undefined || Number.isNaN(v) ? "undefined" : (+v).toFixed(n);
-const COMPARE = D.methods.filter((m) => ["jepa", "scgpt", "linear"].includes(m)); // <=3 overlapping series
+const COMPARE = ["celljepa", "scgpt", "linear", "jepa"].filter((m) => D.methods.includes(m)).slice(0, 3); // <=3 overlapping series
 let state = { cond: D.typical, method: D.methods.includes("jepa") ? "jepa" : D.methods[0], revealed: false };
 
 function el(tag, attrs = {}, parent) {

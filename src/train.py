@@ -53,8 +53,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .data import CTRL, Dataset
-from .evaluate import evaluate_predictions, summarize
+from .data import CTRL, Dataset, percell_pairs
+from .evaluate import PERCELL_N_CELLS, evaluate_predictions, percell_metrics, summarize, summarize_percell
 from .models import (LatentPredictor, Projector, bin_expression, build_scgpt, cosine_aux_loss,
                      ema_update, encode_and_decode, gene_vocab_ids, make_teacher, pool,
                      prepend_cls, scgpt_ecs_loss, state_hash)
@@ -125,6 +125,9 @@ class TrainConfig:
 
     def __post_init__(self):
         assert self.method in METHODS, self.method
+        # Runs initialised from our kidney pretraining belong to Track A (Cell-JEPA reimplementation).
+        if self.track == "B" and "/trackA/" in self.ckpt:
+            self.track = "A"
         assert self.input_transform in INPUT_TRANSFORMS, self.input_transform
         assert self.teacher_update in TEACHER_UPDATES, self.teacher_update
         # extra deviations only for non-default settings, so default configs match Track B exactly
@@ -411,6 +414,24 @@ class Trainer:
 
     # ------------------------------------------------------------------ prediction
     @torch.no_grad()
+    @torch.no_grad()
+    def _forward_controls(self, model, ctrl_cells: np.ndarray, gpos: int) -> torch.Tensor:
+        """Predicted post-perturbation profiles (B, n_genes) for control cells + target gene."""
+        idx = torch.as_tensor(ctrl_cells, device=self.device)
+        vals = self.X_in[idx]
+        dec = None if self.X_in is self.X else self.X[idx]
+        B = vals.shape[0]
+        flags = torch.zeros(B, self.n_genes, dtype=torch.long, device=self.device)
+        flags[:, gpos] = 1
+        mask = torch.zeros(B, self.n_genes, dtype=torch.bool, device=self.device)
+        src = self.gene_ids.unsqueeze(0).expand(B, -1)
+        if self.use_cls:   # celljepa: <cls> at position 0, dropped from the output
+            src, vals, flags, mask, dec = prepend_cls(src, vals, flags, mask, self.cls_id, dec)
+        with torch.autocast(**self.amp):
+            _, p = encode_and_decode(model, src, vals, flags, mask, dec)
+        return p[:, 1:] if self.use_cls else p
+
+    @torch.no_grad()
     def predict(self, conditions: list[str], model=None, gene_override: dict | None = None,
                 n_controls: int | None = None) -> dict:
         """Mean predicted profile per condition from the fixed shared control inputs.
@@ -418,30 +439,37 @@ class Trainer:
         model = model or self.model
         model.eval()
         bs = self.cfg.eval_batch_size
-        src_all = self.gene_ids.unsqueeze(0)
         preds = {}
         for c in conditions:
             ctrl = np.asarray(self.ds.eval_controls[c][: n_controls or None])
             gpos = (gene_override or {}).get(c, self.ds.gene_pos(c))
             acc = torch.zeros(self.n_genes, dtype=torch.float64, device=self.device)
             for i in range(0, len(ctrl), bs):
-                idx = torch.as_tensor(ctrl[i:i + bs], device=self.device)
-                vals = self.X_in[idx]
-                dec = None if self.X_in is self.X else self.X[idx]
-                B = vals.shape[0]
-                flags = torch.zeros(B, self.n_genes, dtype=torch.long, device=self.device)
-                flags[:, gpos] = 1
-                mask = torch.zeros(B, self.n_genes, dtype=torch.bool, device=self.device)
-                src = src_all.expand(B, -1)
-                if self.use_cls:   # celljepa: <cls> at position 0, dropped from the output
-                    src, vals, flags, mask, dec = prepend_cls(src, vals, flags, mask, self.cls_id, dec)
-                with torch.autocast(**self.amp):
-                    _, p = encode_and_decode(model, src, vals, flags, mask, dec)
-                if self.use_cls:
-                    p = p[:, 1:]
-                acc += p.double().sum(0)
+                acc += self._forward_controls(model, ctrl[i:i + bs], gpos).double().sum(0)
             preds[c] = (acc / len(ctrl)).float().cpu().numpy()
         return preds
+
+    @torch.no_grad()
+    def evaluate_per_cell(self, split_name: str, model=None, n_cells: int = PERCELL_N_CELLS):
+        """Paper-style per-cell scoring (see src/evaluate.py:percell_metrics).
+
+        For each held-out condition, up to n_cells treated cells are each paired with one control
+        cell (fixed draw shared by every method, src/data.py:percell_pairs); the model predicts from
+        the control input only, and correlations are computed per cell then averaged."""
+        model = model or self.model
+        model.eval()
+        bs = self.cfg.eval_batch_size
+        rows = []
+        de_rank = getattr(self.ds, "de_rank20", None) or {}
+        for c in self.ds.split[split_name]:
+            treated, ctrl = percell_pairs(self.ds, c, n_cells)
+            gpos = self.ds.gene_pos(c)
+            pred = torch.cat([self._forward_controls(model, ctrl[i:i + bs], gpos).float()
+                              for i in range(0, len(ctrl), bs)]).cpu().numpy()
+            X = np.asarray(self.ds.X)
+            m = percell_metrics(pred, X[treated], X[ctrl], de_rank.get(c), self.ds.de_idx[c])
+            rows.append({"condition": c, **m})
+        return rows, summarize_percell(rows)
 
     def evaluate(self, split_name: str, model=None, preds=None):
         conds = self.ds.split[split_name]
@@ -536,6 +564,8 @@ def run_training(ds: Dataset, ckpt_dir: str, cfg: TrainConfig, run_dir: str, com
 
     # ---- single test evaluation of the selected checkpoint ----
     test_preds, test_rows, test_sum = tr.evaluate("test", model=model)
+    pc_rows, pc_sum = tr.evaluate_per_cell("test", model=model)
+    log("per-cell test metrics", **{k: v for k, v in pc_sum.items() if not k.endswith("_n_defined")})
     c0 = ds.split["test"][0]
     other = ds.gene_pos(ds.split["train"][0] if ds.split["train"][0] != CTRL else ds.split["train"][1])
     alt = tr.predict([c0], model=model, gene_override={c0: other}, n_controls=64)[c0]
@@ -550,7 +580,7 @@ def run_training(ds: Dataset, ckpt_dir: str, cfg: TrainConfig, run_dir: str, com
                       + " -> fine-tuned; selected epoch %d" % best[1],
         "split_hash": ds.manifest["split_hash"], "manifest_sha": ds.manifest["h5ad_sha256"],
         "epochs_completed": epochs_done, "selected_epoch": best[1], "val_delta_rmse_selected": best[0],
-        "test": test_sum, "elapsed_seconds": time.time() - t_start,
+        "test": test_sum, "test_percell": pc_sum, "elapsed_seconds": time.time() - t_start,
         "peak_gpu_mem_gb": torch.cuda.max_memory_allocated() / 1e9,
         "reload_max_abs_diff": reload_diff, "reload_tolerance": 1e-3, "reload_ok": reload_diff <= 1e-3,
         "intervention_sensitivity_mean_abs": sensitivity,
@@ -565,6 +595,7 @@ def run_training(ds: Dataset, ckpt_dir: str, cfg: TrainConfig, run_dir: str, com
         metrics["ckpt"], metrics["input_transform"] = cfg.ckpt, cfg.input_transform
     _write(run_dir, "metrics.json", metrics)
     _write_rows(os.path.join(run_dir, "per_intervention.csv"), test_rows)
+    _write_rows(os.path.join(run_dir, "per_intervention_percell.csv"), pc_rows)
     np.savez_compressed(os.path.join(run_dir, "test_predictions.npz"),
                         conditions=np.array(list(test_preds)), preds=np.stack(list(test_preds.values())))
     _write(run_dir, "status.json", {"status": status, "finished_unix": time.time()})

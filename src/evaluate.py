@@ -124,6 +124,57 @@ def summarize(rows: list[dict]) -> dict:
     return out
 
 
+PERCELL_N_CELLS = 200
+PERCELL_KEYS = ["percell_pearson", "percell_pearson_de", "percell_top20_de_nd",
+                "percell_delta_pearson", "percell_delta_pearson_de", "percell_delta_top20_de_nd"]
+
+
+def percell_metrics(pred_cells: np.ndarray, obs_cells: np.ndarray, ctrl_cells: np.ndarray,
+                    de_rank20: list[int] | None, de_nd_idx: list[int]) -> dict:
+    """Per-cell scoring, our best reading of Cell-JEPA's (ambiguous) evaluation.
+
+    Row i: model prediction from control cell ctrl_cells[i] vs the paired treated cell
+    obs_cells[i]. Absolute metrics correlate pred_i with obs_i; delta metrics correlate
+    (pred_i - ctrl_i) with (obs_i - ctrl_i), i.e. against each cell's own control input.
+    Per-cell Pearsons are averaged over cells (undefined cells skipped, counted).
+    Unlike the mean-based metrics, these include single-cell noise, so they are much lower;
+    they exist only to compare with numbers reported on that basis.
+    """
+    P = np.asarray(pred_cells, np.float64)
+    O = np.asarray(obs_cells, np.float64)
+    C = np.asarray(ctrl_cells, np.float64)
+    sets = {"": None, "_de": None if de_rank20 is None else np.asarray(de_rank20, int),
+            "_top20_de_nd": np.asarray(de_nd_idx, int)}
+    out = {"n_cells_scored": int(len(P))}
+    for suffix, idx in sets.items():
+        name = {"": "pearson", "_de": "pearson_de", "_top20_de_nd": "top20_de_nd"}[suffix]
+        for delta in (False, True):
+            key = f"percell_{'delta_' if delta else ''}{name}"
+            if suffix == "_de" and idx is None:
+                out[key] = float("nan")
+                continue
+            vals = []
+            for i in range(len(P)):
+                p, o = (P[i] - C[i], O[i] - C[i]) if delta else (P[i], O[i])
+                if idx is not None:
+                    p, o = p[idx], o[idx]
+                vals.append(pearson(p, o))
+            v = np.array(vals)
+            out[key] = float(np.nanmean(v)) if (~np.isnan(v)).any() else float("nan")
+    return out
+
+
+def summarize_percell(rows: list[dict]) -> dict:
+    """Equal weight per intervention (each row already averages its cells)."""
+    out = {"n_interventions": len(rows), "n_cells_per_intervention": PERCELL_N_CELLS}
+    for k in PERCELL_KEYS:
+        v = np.array([r[k] for r in rows], dtype=np.float64)
+        ok = ~np.isnan(v)
+        out[k] = float(v[ok].mean()) if ok.any() else float("nan")
+        out[f"{k}_n_defined"] = int(ok.sum())
+    return out
+
+
 def bootstrap_mean_ci(values: np.ndarray, n_boot: int = 2000, seed: int = 0, alpha: float = 0.05):
     """Percentile CI of the mean, resampling *interventions* (not cells)."""
     v = np.asarray(values, dtype=np.float64)

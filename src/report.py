@@ -16,11 +16,14 @@ import numpy as np
 from .evaluate import (GEARS_DE_MISSING_NOTE, GEARS_KEYS, METRIC_KEYS, bootstrap_mean_ci, evaluate_predictions,
                        paired_bootstrap_diff)
 
-METHOD_ORDER = ["jepa", "scgpt", "linear", "training_mean", "no_change"]
-METHOD_LABEL = {"jepa": "scGPT + JEPA aux (ours)", "scgpt": "scGPT (matched)", "linear": "Linear (gene emb.)",
+METHOD_ORDER = ["celljepa", "jepa", "scgpt", "linear", "training_mean", "no_change"]
+METHOD_LABEL = {"celljepa": "scGPT + Cell-JEPA FT recipe (unofficial)", "jepa": "scGPT + JEPA aux (ours)",
+                "scgpt": "scGPT (matched)", "linear": "Linear (gene emb.)",
                 "training_mean": "Training mean", "no_change": "No change"}
+# Overlapping-mark charts (dot plots, demo comparisons) show at most 3 series, chosen in this order.
+COMPARE_PRIORITY = ["celljepa", "scgpt", "linear", "jepa"]
 # fixed entity -> categorical slot (dataviz reference palette, light / dark); never by rank
-METHOD_COLOR = {"jepa": ("#2a78d6", "#3987e5"), "scgpt": ("#eb6834", "#d95926"),
+METHOD_COLOR = {"celljepa": ("#e87ba4", "#d55181"), "jepa": ("#2a78d6", "#3987e5"), "scgpt": ("#eb6834", "#d95926"),
                 "linear": ("#1baf7a", "#199e70"), "training_mean": ("#eda100", "#c98500"),
                 "no_change": ("#8a8984", "#8a8984")}
 
@@ -43,8 +46,22 @@ def _read_rows(p):
     return rows
 
 
+DEFAULT_CKPT_NAMES = ("scGPT_human", "/vol/checkpoints/scGPT_human")
+
+
+def _ckpt_of(cfg: dict) -> str:
+    c = str(cfg.get("ckpt") or "scGPT_human").rstrip("/")
+    return "scGPT_human" if c in DEFAULT_CKPT_NAMES else c
+
+
 def collect_runs(exp_dir: str, split_hash: str):
-    """Latest completed run per (method, seed); every run's status is reported."""
+    """Latest completed run per (checkpoint, method, seed); every run's status is reported.
+
+    This per-experiment report compares methods from ONE initial checkpoint. If an experiment
+    holds runs from several checkpoints (e.g. Track A kidney models), only the public
+    scGPT_human runs are kept here (or, if none, the most common checkpoint); the others are
+    reported as excluded — use src/track_a/report.py for multi-checkpoint comparisons.
+    """
     status, chosen = [], {}
     for d in sorted(glob.glob(os.path.join(exp_dir, "runs", "*"))):
         st = _read_json(os.path.join(d, "status.json")) if os.path.exists(os.path.join(d, "status.json")) else {"status": "submitted"}
@@ -54,18 +71,28 @@ def collect_runs(exp_dir: str, split_hash: str):
         state = st.get("status", "?")
         if state == "running" and m is None:
             state = "running_or_died"  # a container that hit its timeout leaves this behind
-        row = {"run": os.path.basename(d), "method": cfg.get("method"), "seed": cfg.get("seed"), "status": state}
+        ckpt = _ckpt_of(cfg)
+        row = {"run": os.path.basename(d), "method": cfg.get("method"), "seed": cfg.get("seed"), "ckpt": ckpt,
+               "status": state}
         if m:
             row.update(epochs=m["epochs_completed"], minutes=round(m["elapsed_seconds"] / 60, 1),
                        gpu=m["environment"].get("gpu"), reload_ok=m["reload_ok"])
             if m["split_hash"] != split_hash:
                 row["status"] = "excluded_split_mismatch"
             elif m["status"] in ("completed", "stopped_by_time_budget"):
-                key = (m["method"], m["seed"])
+                key = (ckpt, m["method"], m["seed"])
                 if key not in chosen or os.path.getmtime(mpath) > os.path.getmtime(os.path.join(chosen[key], "metrics.json")):
                     chosen[key] = d
         status.append(row)
-    return status, chosen
+    ckpts = [k[0] for k in chosen]
+    if len(set(ckpts)) > 1:
+        keep = "scGPT_human" if "scGPT_human" in ckpts else max(set(ckpts), key=ckpts.count)
+        dropped = {chosen[k] for k in chosen if k[0] != keep}
+        for row in status:
+            if os.path.join(exp_dir, "runs", row["run"]) in dropped:
+                row["status"] = f"excluded_other_checkpoint (report keeps {keep})"
+        chosen = {k: v for k, v in chosen.items() if k[0] == keep}
+    return status, {(k[1], k[2]): v for k, v in chosen.items()}
 
 
 def load_entries(ds, exp_dir: str):
@@ -143,8 +170,9 @@ def aggregate(ds, exp_dir: str, out_dir: str) -> dict:
         return np.array([seed_avg[m][c][k] for c in test])
 
     comparisons = {}
-    for a, b in [("jepa", "scgpt"), ("jepa", "linear"), ("scgpt", "linear"), ("jepa", "training_mean"),
-                 ("scgpt", "training_mean"), ("linear", "training_mean")]:
+    pairs = [(a, b) for a in ("celljepa", "jepa") for b in ("scgpt", "linear", "training_mean")]
+    pairs += [("celljepa", "jepa"), ("scgpt", "linear"), ("scgpt", "training_mean"), ("linear", "training_mean")]
+    for a, b in pairs:
         if a in seed_avg and b in seed_avg:
             comparisons[f"{a}_minus_{b}_delta_rmse"] = paired_bootstrap_diff(vec(a), vec(b))
             comparisons[f"{a}_minus_{b}_de20_delta_pearson"] = paired_bootstrap_diff(
@@ -197,24 +225,30 @@ def _claim(comp, methods) -> dict:
         c = comp.get(key)
         return c is not None and c["ci_high"] < 0  # lower RMSE, CI excludes 0
 
-    if "jepa" not in methods or "scgpt" not in methods:
+    # The JEPA-style arm under test: the Cell-JEPA FT recipe if present, else our v0 adaptation.
+    arm = "celljepa" if "celljepa" in methods else "jepa"
+    name = {"celljepa": "The Cell-JEPA fine-tuning recipe (unofficial reimplementation)",
+            "jepa": "Our JEPA adaptation"}[arm]
+    if arm not in methods or "scgpt" not in methods:
         return {"level": "baselines_only", "text": "Only baselines are complete; no model comparison can be claimed."}
     strong = [b for b in ("linear", "training_mean") if b in methods]
-    if better("jepa_minus_scgpt_delta_rmse") and all(better(f"jepa_minus_{b}_delta_rmse") for b in strong) and strong:
-        txt = ("Our JEPA adaptation has lower held-out delta RMSE than matched scGPT and the simple baselines on this "
+    if better(f"{arm}_minus_scgpt_delta_rmse") and all(better(f"{arm}_minus_{b}_delta_rmse") for b in strong) and strong:
+        txt = (f"{name} has lower held-out delta RMSE than matched scGPT and the simple baselines on this "
                "Adamson split (bootstrap over interventions; 2 training seeds, one fixed split).")
         lvl = "beats_strong_baselines"
-    elif better("jepa_minus_scgpt_delta_rmse"):
-        txt = ("Preliminary: our JEPA adaptation improves delta RMSE over matched scGPT on this split, but not over all "
+    elif better(f"{arm}_minus_scgpt_delta_rmse"):
+        txt = (f"Preliminary: {name} improves delta RMSE over matched scGPT on this split, but not over all "
                "simple baselines.")
         lvl = "beats_matched_scgpt_only"
     else:
-        txt = ("No supported improvement: the JEPA auxiliary objective did not reduce held-out delta RMSE versus matched "
+        txt = (f"No supported improvement: {name} did not reduce held-out delta RMSE versus matched "
                "scGPT with a bootstrap CI excluding zero. This is a valid negative/inconclusive result.")
         lvl = "no_improvement"
     if "linear" not in methods:
         txt += " Linear baseline missing — result is preliminary."
-    return {"level": lvl, "text": txt + " Conditional on the fixed split and fitted models; Track B, not a Cell-JEPA reproduction."}
+    return {"level": lvl, "arm": arm,
+            "text": txt + " Conditional on the fixed split and fitted models; public scGPT starting weights, "
+                          "not a Cell-JEPA reproduction."}
 
 
 def _benchmark_table(exp_dir):
@@ -294,7 +328,7 @@ def _plots(out_dir, summary, seed_avg, test, methods):
     fig.savefig(os.path.join(out_dir, "aggregate_delta_rmse.png"), dpi=160)
     plt.close(fig)
 
-    show = [m for m in ("jepa", "scgpt", "linear") if m in methods]  # <=3 overlapping series
+    show = [m for m in COMPARE_PRIORITY if m in methods][:3]  # <=3 overlapping series
     if show:
         order = sorted(test, key=lambda c: seed_avg[show[-1]][c]["delta_rmse"])
         fig, ax = plt.subplots(figsize=(8, 0.22 * len(order) + 1.2))

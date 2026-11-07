@@ -80,8 +80,9 @@ def prepare(exp_id: str = DEFAULT_EXP, split_seed: int = 1, n_eval_controls: int
     import numpy as np
 
     from src import baselines as B
-    from src.data import build_cache, download_adamson, download_scgpt, load_cache
-    from src.evaluate import evaluate_predictions, summarize
+    from src.data import build_cache, download_adamson, download_scgpt, load_cache, percell_pairs
+    from src.evaluate import (PERCELL_N_CELLS, evaluate_predictions, percell_metrics, summarize,
+                              summarize_percell)
     from src.train import _write, _write_rows
 
     dl = download_adamson(RAW)
@@ -96,13 +97,14 @@ def prepare(exp_id: str = DEFAULT_EXP, split_seed: int = 1, n_eval_controls: int
 
     edir = exp_dir(exp_id)
     os.makedirs(edir, exist_ok=True)
+    track = "A" if "trackA" in exp_id else "B"
     exp_path = os.path.join(edir, "experiment.json")
     if os.path.exists(exp_path):
         prev = json.load(open(exp_path))
         if prev["split_hash"] != ds.manifest["split_hash"]:
             raise RuntimeError(f"experiment {exp_id} already bound to split {prev['split_hash']}")
     else:
-        _write(edir, "experiment.json", {"exp_id": exp_id, "track": "B", "cache_dir": cdir,
+        _write(edir, "experiment.json", {"exp_id": exp_id, "track": track, "cache_dir": cdir,
                                           "split_seed": split_seed, "split_hash": ds.manifest["split_hash"],
                                           "created_unix": time.time()})
 
@@ -123,8 +125,21 @@ def prepare(exp_id: str = DEFAULT_EXP, split_seed: int = 1, n_eval_controls: int
             rows = evaluate_predictions(preds, ds, conds, ctrl)
             out[split_name] = (preds, rows, summarize(rows))
         preds, rows, summ = out["test"]
-        meta = {"method": name, "track": "B", "checkpoint": "-", "split_hash": ds.manifest["split_hash"],
+        # paper-style per-cell scores on the same fixed (treated, control) pairs the models use;
+        # no-change predicts each cell's own control input, other baselines a constant profile
+        pc_rows = []
+        de_rank = ds.de_rank20 or {}
+        for c in ds.split["test"]:
+            treated, ctrl_cells = percell_pairs(ds, c, PERCELL_N_CELLS)
+            Xc = np.asarray(ds.X[ctrl_cells])
+            pred_cells = Xc if name == "no_change" else np.tile(preds[c], (len(ctrl_cells), 1))
+            pc_rows.append({"condition": c, **percell_metrics(pred_cells, np.asarray(ds.X[treated]), Xc,
+                                                              de_rank.get(c), ds.de_idx[c])})
+        pc_sum = summarize_percell(pc_rows)
+        _write_rows(os.path.join(bdir, "per_intervention_percell.csv"), pc_rows)
+        meta = {"method": name, "track": track, "checkpoint": "-", "split_hash": ds.manifest["split_hash"],
                 "fit_on": "training interventions only", "info": info, "val": out["val"][2], "test": summ,
+                "test_percell": pc_sum,
                 "elapsed_seconds": time.time() - t0, "status": "completed"}
         _write(bdir, "metrics.json", meta)
         _write_rows(os.path.join(bdir, "per_intervention.csv"), rows)

@@ -7,3 +7,4 @@ reports/
 *.npy
 *.npz
 *.h5ad
+.claude/
