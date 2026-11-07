@@ -194,7 +194,8 @@ class Trainer:
         self.ckpt_dir = ckpt_dir
         self.model.to(device)
         self.d = self.ckpt_args["embsize"]
-        gids, self.vocab_info = gene_vocab_ids(ds.gene_names, self.vocab)
+        gids, self.vocab_info = gene_vocab_ids(ds.gene_names, self.vocab,
+                                               extra_aliases=ds.manifest.get("extra_hgnc_aliases"))
         pad = self.vocab["<pad>"]
         all_conds = ds.split["train"] + ds.split["val"] + ds.split["test"]
         self.vocab_info["targets_mapped_to_pad"] = [c for c in all_conds if c != CTRL and gids[ds.gene_pos(c)] == pad]

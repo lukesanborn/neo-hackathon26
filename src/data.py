@@ -16,7 +16,16 @@ from dataclasses import dataclass
 
 import numpy as np
 
-ADAMSON_URL = "https://dataverse.harvard.edu/api/access/datafile/6154417"  # from gears 0.0.2 pertdata.py
+# GEARS-processed Perturb-seq archives (each zip extracts to <name>/perturb_processed.h5ad).
+DATASETS = {
+    "adamson": "https://dataverse.harvard.edu/api/access/datafile/6154417",                  # gears 0.0.2 pertdata.py
+    "replogle_k562_essential": "https://dataverse.harvard.edu/api/access/datafile/7458695",  # gears 0.1.2 pertdata.py
+}
+DATASET_LABELS = {
+    "adamson": "adamson (GEARS processed, cell-gears 0.0.2 dataverse file 6154417)",
+    "replogle_k562_essential": "replogle_k562_essential (GEARS processed, cell-gears 0.1.2 dataverse file 7458695)",
+}
+ADAMSON_URL = DATASETS["adamson"]
 SCGPT_HUMAN_FOLDER = "https://drive.google.com/drive/folders/1oWh_-ZRdhtoGQ2Fw24HP41FgLoomVo-y"
 
 CTRL = "ctrl"
@@ -43,24 +52,47 @@ def target_gene(condition: str) -> str | None:
 # ----------------------------------------------------------------------------- download
 
 
-def download_adamson(raw_dir: str) -> dict:
+def cache_dir_name(dataset: str, split_seed: int) -> str:
+    """Cache directory name per (dataset, split seed). Adamson keeps its original name: existing
+    experiments (split hash 5618e72828c1) point at it."""
+    if dataset not in DATASETS:
+        raise KeyError(f"unknown dataset {dataset!r}; known: {sorted(DATASETS)}")
+    if dataset == "adamson":
+        return f"adamson_gears002_simulation_seed{split_seed}"
+    return f"{dataset}_gears_simulation_seed{split_seed}"
+
+
+def download_dataset(name: str, raw_dir: str) -> dict:
+    """Download + unzip a GEARS-processed dataset once into ``raw_dir`` (``<name>.zip`` -> ``<name>/``)."""
+    if name not in DATASETS:
+        raise KeyError(f"unknown dataset {name!r}; known: {sorted(DATASETS)}")
+    url = DATASETS[name]
     os.makedirs(raw_dir, exist_ok=True)
-    zpath = os.path.join(raw_dir, "adamson.zip")
+    zpath = os.path.join(raw_dir, f"{name}.zip")
     fresh = False
     if not os.path.exists(zpath):
-        subprocess.run(["wget", "-q", "-O", zpath, ADAMSON_URL], check=True)
+        subprocess.run(["wget", "-q", "-O", zpath + ".part", url], check=True)
+        os.replace(zpath + ".part", zpath)
         fresh = True
-    h5 = os.path.join(raw_dir, "adamson", "perturb_processed.h5ad")
+    h5 = os.path.join(raw_dir, name, "perturb_processed.h5ad")
     if fresh or not os.path.exists(h5):
         subprocess.run(["unzip", "-o", "-q", zpath, "-d", raw_dir], check=True)
+    if not os.path.exists(h5):
+        listing = subprocess.run(["unzip", "-l", zpath], capture_output=True, text=True).stdout
+        raise FileNotFoundError(f"{zpath} did not extract to {h5}; archive contents:\n{listing}")
     return {
-        "source_url": ADAMSON_URL,
+        "dataset_name": name,
+        "source_url": url,
         "zip_path": zpath,
         "zip_sha256": sha256(zpath),
         "h5ad_path": h5,
         "h5ad_sha256": sha256(h5),
         "download_date_utc": _dt.datetime.utcfromtimestamp(os.path.getmtime(zpath)).isoformat(),
     }
+
+
+def download_adamson(raw_dir: str) -> dict:
+    return download_dataset("adamson", raw_dir)
 
 
 def download_scgpt(ckpt_dir: str) -> dict:
@@ -229,22 +261,82 @@ def write_de_rank20(h5ad_path: str, cache_dir: str, force: bool = False) -> dict
     return {"path": out, "written": True, "n_conditions": len(de_rank20), "h5ad_sha256": sha256(h5ad_path)}
 
 
+def screen_targets(conditions, gene_names: list[str], vocab_genes: set | None,
+                   aliases: dict | None = None) -> tuple[dict, dict]:
+    """Interventions the scGPT perturbation models cannot represent -> excluded from the cache.
+
+    A condition is kept only if it is a single-gene perturbation whose target is a measured gene
+    (the model flags the target's position) and whose symbol — directly or via ``aliases`` — is in
+    the scGPT vocab (else it maps to <pad> and the Trainer refuses to run). Also excluded: a target
+    symbol that labels more than one measured column (``gene_pos`` would be ambiguous) and an alias
+    whose new symbol is itself a measured gene (two columns would share one token).
+    ``vocab_genes=None`` skips the vocab checks. Returns ({condition: reason}, {target: alias used}).
+    """
+    names = set(gene_names)
+    n_cols = {}
+    for g in gene_names:
+        n_cols[g] = n_cols.get(g, 0) + 1
+    aliases = aliases or {}
+    excluded, aliased = {}, {}
+    for c in sorted(set(conditions)):
+        if c == CTRL:
+            continue
+        try:
+            g = target_gene(c)
+        except ValueError:
+            g = None
+        if g is None:
+            excluded[c] = "not_single_gene"
+        elif g not in names:
+            excluded[c] = "target_not_in_measured_genes"
+        elif n_cols[g] > 1:
+            excluded[c] = "target_name_duplicated_in_gene_list"
+        elif vocab_genes is not None and g not in vocab_genes:
+            if aliases.get(g) in names:
+                excluded[c] = "alias_collides_with_measured_gene"
+            elif aliases.get(g) in vocab_genes:
+                aliased[g] = aliases[g]
+            else:
+                excluded[c] = "target_not_in_scgpt_vocab"
+    return excluded, aliased
+
+
 def build_cache(h5ad_path: str, out_dir: str, split_seed: int, n_eval_controls: int,
                 eval_control_seed: int, download_info: dict, ckpt_info: dict,
-                vocab_genes: set | None) -> dict:
+                vocab_genes: set | None, dataset: str = "adamson", base_aliases: dict | None = None,
+                extra_aliases: dict | None = None) -> dict:
+    """base_aliases: HGNC renames the Trainer always applies (models.HGNC_ALIASES); extra_aliases:
+    dataset-scoped renames, recorded in the manifest and applied by the Trainer for this cache only.
+    Interventions that cannot be represented (see screen_targets) are dropped with their cells
+    BEFORE the split, so they appear in no split; the list is recorded in the manifest."""
+    if vocab_genes is not None and base_aliases is None:
+        # the Trainer always applies models.HGNC_ALIASES; screening without them would drop
+        # representable targets (e.g. Adamson's AARS -> AARS1) and change the split
+        raise ValueError("base_aliases is required when screening against vocab_genes (pass models.HGNC_ALIASES)")
     import scanpy as sc
     import scipy.sparse as sp
 
     os.makedirs(out_dir, exist_ok=True)
     ad = sc.read_h5ad(h5ad_path)
     ad.obs["condition"] = ad.obs["condition"].astype(str)
+    n_cells_raw = int(ad.n_obs)
+    raw_conds = ad.obs["condition"].to_numpy().astype(str)
+    raw_counts = {c: int(n) for c, n in zip(*np.unique(raw_conds, return_counts=True))}
+    aliases = {**(base_aliases or {}), **(extra_aliases or {})}
+    excluded, target_aliases = screen_targets(raw_conds, ad.var["gene_name"].astype(str).tolist(),
+                                              vocab_genes, aliases)
+    if excluded:
+        ad = ad[~ad.obs["condition"].isin(list(excluded))].copy()
     X = ad.X.toarray() if sp.issparse(ad.X) else np.asarray(ad.X)
-    X = X.astype(np.float32)
+    X = X.astype(np.float32, copy=False)
     np.save(os.path.join(out_dir, "X.npy"), X)
 
     conditions = ad.obs["condition"].to_numpy().astype(str)
     gene_ids = ad.var.index.astype(str).tolist()
     gene_names = ad.var["gene_name"].astype(str).tolist()
+    seen, dup_names = set(), set()
+    for g in gene_names:
+        (dup_names if g in seen else seen).add(g)
 
     split = make_split(ad, seed=split_seed)
     all_conds = sorted(set(conditions))
@@ -282,13 +374,30 @@ def build_cache(h5ad_path: str, out_dir: str, split_seed: int, n_eval_controls: 
             "genes_total": len(gene_names),
             "genes_not_in_vocab_first50": [g for g, ok in zip(gene_names, in_vocab) if not ok][:50],
             "targets_not_in_vocab": [c for c, g in pert_targets.items() if g not in vocab_genes],
+            "targets_not_in_vocab_after_aliases": [c for c, g in pert_targets.items()
+                                                   if g not in vocab_genes and aliases.get(g) not in vocab_genes],
         }
 
     manifest = {
-        "dataset": "adamson (GEARS processed, cell-gears 0.0.2 dataverse file 6154417)",
+        "dataset": DATASET_LABELS[dataset],
+        "dataset_name": dataset,
         "track": "B",
         **download_info,
-        "gears_revision": "cell-gears==0.0.2 (PyPI)",
+        "n_cells_raw": n_cells_raw,
+        "n_conditions_raw": len(raw_counts),
+        "excluded_interventions": excluded,
+        "n_excluded_interventions": len(excluded),
+        "excluded_by_reason_counts": {r: sum(v == r for v in excluded.values()) for r in sorted(set(excluded.values()))},
+        "n_cells_excluded": int(sum(raw_counts[c] for c in excluded)),
+        "exclusion_rule": "dropped before the split (in no split, cells removed): not a single-gene "
+                          "perturbation, target not among the measured genes, or target symbol not in the "
+                          "scGPT vocab after HGNC aliases",
+        "extra_hgnc_aliases": dict(extra_aliases or {}),
+        "target_aliases_applied": target_aliases,
+        "duplicate_gene_names": sorted(dup_names),
+        "gears_revision": ("cell-gears==0.0.2 (PyPI)" if dataset == "adamson" else
+                           "data file: dataverse URL from cell-gears 0.1.2 pertdata.py; split: cell-gears==0.0.2 "
+                           "(PyPI) DataSplitter"),
         "n_cells": int(X.shape[0]),
         "n_genes": int(X.shape[1]),
         "expression_layer": "adata.X as distributed by GEARS (log1p of normalised counts; "
@@ -301,7 +410,7 @@ def build_cache(h5ad_path: str, out_dir: str, split_seed: int, n_eval_controls: 
         "cells_per_condition": counts,
         "control_label": CTRL,
         "n_control_cells": int(len(ctrl_idx)),
-        "targets_not_in_gene_list": missing_in_genes,
+        "targets_not_in_gene_list": missing_in_genes,   # after exclusions (see excluded_interventions)
         "vocab_coverage": coverage,
         "scgpt_checkpoint": ckpt_info,
         "split_generator": "gears.data_utils.DataSplitter(split_type='simulation'), "
