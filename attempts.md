@@ -411,6 +411,23 @@ Validation at 2,000 steps: paper JEPA val recon 14.63 (`<cls>`=0) / 14.68 (−2)
 - **Cost:** slightly worse reconstruction (val 15.19 vs 14.63).
 - **Implication for the blood run:** the paper's JEPA would likely reduce to plain scGPT. A meaningful JEPA-vs-scGPT test from public scGPT needs `center` (a deviation from the paper, recorded). Note: in the kidney from-scratch runs, `faithful` beat `center` on Task 2 (0.606 vs 0.471), so the best variant depends on the starting point.
 
+## A20. Replogle K562 essential: data contract + baselines + timing pilot (Nov 7)
+
+Merged from the Unit 2 branch. Experiment `replogle_k562_v1`, GEARS-processed (dataverse 7458695), cache `data/replogle_k562_essential_gears_simulation_seed1`, split hash **`d4237826c68c`** (GEARS 0.0.2 simulation, seed 1). The Adamson cache was rebuilt in a temp dir to confirm it is byte-identical (split hash 5618e72828c1 unchanged).
+
+- **680 of 1,092 knockdowns were excluded:** their target gene is not among the 5,000 measured genes. Our scGPT perturbation models mark the target by its gene column, so they cannot represent these. This differs from published GEARS/scGPT Replogle splits, which keep all perturbations.
+- **Kept:** 412 knockdowns, 68,716 cells (10,691 controls) × 5,000 genes. Split: **278 train / 31 val / 103 test** (~5× Adamson's 22 test genes).
+- **12 targets aliased to current HGNC symbols.** 7 of these are new and Replogle-only (kept dataset-specific so Adamson's inputs do not change).
+
+| Baseline | test delta RMSE | test Δ-Pearson |
+|---|---|---|
+| linear | 0.0755 | 0.423 |
+| training mean | 0.0773 | 0.400 |
+| no change | 0.0832 | undefined |
+
+- Replogle is a harder benchmark than Adamson: Δ-Pearson ~0.4 vs ~0.7. Linear and training mean are closer to no-change here.
+- **Timing pilot** (B300, `scgpt_paper`, public scGPT): 0.116 s/step at batch 64, 790 steps/epoch → **~30 min per 15-epoch fine-tune**; peak GPU 17.8 GB.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.
