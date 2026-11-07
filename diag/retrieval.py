@@ -1,16 +1,23 @@
-"""A16: predicted-effect retrieval — scoring Task 3 predictions the way a perturbation-selection tool would use them.
+"""A16/A17: predicted-effect retrieval — scoring Task 3 predictions the way a perturbation-selection tool would use them,
+with per-gene scores and paired bootstrap confidence intervals (A17).
 
-For every saved Adamson test prediction set (runs + baselines), with deltas = profile − mean of all control cells:
-  * ref_spearman / ref_p@5: rank the 58 measured TRAINING perturbations by cosine similarity to the predicted
+For every saved test prediction set (runs + baselines), with deltas = profile − mean of all control cells:
+  * ref_spearman / ref_p@5: rank the measured TRAINING perturbations by cosine similarity to the predicted
     delta of a held-out gene, and compare with the ranking by its TRUE delta (Spearman; top-5 overlap / 5).
   * cluster_agreement: Pearson correlation between the upper triangles of the cosine-similarity matrices of
-    predicted vs true deltas among the 22 held-out genes (do predictions cluster the genes the right way?).
-  * id_top1 / id_mean_rank: is each prediction closest (cosine) to its own gene's true delta among the 22
-    held-out genes? Chance top-1 = 1/22 ≈ 0.045.
+    predicted vs true deltas among the held-out genes (do predictions cluster the genes the right way?).
+  * id_top1 / id_mean_rank: is each prediction closest (cosine) to its own gene's true delta among the
+    held-out genes? Chance top-1 = 1/n_test (1/22 ≈ 0.045 on Adamson).
 Genes: the 500 genes with the largest variance of TRAINING-perturbation mean deltas (no test information).
 A constant prediction (training mean) scores near chance on cluster/identification by construction.
 
-Run from the repo root:  .venv/bin/modal run diag/retrieval.py
+CIs (src/retrieval.py): per-gene scores are averaged over seeds of the same arm (run names differing only by
+`_s<seed>`), then a paired bootstrap over test genes (2000 resamples, rng seed 0, 95% percentile) gives CIs for
+each arm's means and for paired differences (same resampled genes for both arms). cluster_agreement is
+recomputed on each resampled sub-matrix (pairs of duplicated genes dropped; undefined draws skipped).
+
+Run from the repo root:
+  .venv/bin/modal run diag/retrieval.py [--cache /vol/data/...] [--exps a,b,c] [--tag A17_adamson]
 """
 import json
 import os
@@ -27,38 +34,25 @@ image = build_image("hopper")
 CACHE = "/vol/data/adamson_gears002_simulation_seed1"
 EXPS = ["adamson_trackA_lr3e5", "adamson_celljepa_public_v1", "adamson_trackB_v1"]
 N_GENES = 500
-
-
-def _scores(P, T, R):
-    """P, T: (n_test, g) predicted / true deltas; R: (n_ref, g) true training deltas."""
-    import numpy as np
-    from scipy.stats import rankdata, spearmanr
-
-    def unit(A):
-        return A / np.linalg.norm(A, axis=1, keepdims=True).clip(1e-12)
-
-    Pu, Tu, Ru = unit(P), unit(T), unit(R)
-    sp, p5 = [], []
-    for i in range(len(P)):
-        a, b = Ru @ Pu[i], Ru @ Tu[i]
-        sp.append(spearmanr(a, b).statistic if np.std(a) > 1e-12 else np.nan)
-        p5.append(len(set(np.argsort(-a)[:5]) & set(np.argsort(-b)[:5])) / 5)
-    iu = np.triu_indices(len(P), 1)
-    sp_mat, st_mat = (Pu @ Pu.T)[iu], (Tu @ Tu.T)[iu]
-    clus = float(np.corrcoef(sp_mat, st_mat)[0, 1]) if np.std(sp_mat) > 1e-9 else float("nan")
-    S = Pu @ Tu.T                                        # prediction i vs true j
-    ranks = np.array([rankdata(-S[i])[i] for i in range(len(P))])
-    return {"ref_spearman": float(np.nanmean(sp)), "ref_p@5": float(np.mean(p5)), "cluster_agreement": clus,
-            "id_top1": float(np.mean(ranks == 1)), "id_mean_rank": float(np.mean(ranks)), "n_test": len(P)}
+N_BOOT = 2000
+LINEAR = "baselines/linear"
+UPPER = "(upper bound) true deltas"
+# extra paired comparisons (skipped when an arm is absent)
+PAIRS = [
+    ("adamson_trackA_lr3e5/runs/celljepa_jepa_lr3e5", "adamson_trackA_lr3e5/runs/scgpt_paper_scgpt_lr3e5"),
+    ("adamson_celljepa_public_v1/runs/celljepa_v1", "adamson_celljepa_public_v1/runs/scgpt_paper_v1"),
+    ("adamson_trackB_v1/runs/jepa_v1", "adamson_trackB_v1/runs/scgpt_v1"),
+]
 
 
 @app.function(image=image, volumes={"/vol": vol}, cpu=4, memory=16384, timeout=1800)
-def run() -> dict:
+def run(cache: str, exps: list) -> dict:
     import numpy as np
 
+    from src import retrieval as RT
     from src.data import CTRL, load_cache
 
-    ds = load_cache(CACHE, mmap=True)
+    ds = load_cache(cache, mmap=True)
     cond = ds.conditions
     ctrl = np.asarray(ds.X[np.flatnonzero(cond == CTRL)]).mean(0)
     mean_of = lambda c: np.asarray(ds.X[np.flatnonzero(cond == c)]).mean(0)  # noqa: E731
@@ -67,50 +61,134 @@ def run() -> dict:
     R_all = np.stack([mean_of(c) - ctrl for c in train])
     genes = np.argsort(-R_all.var(0))[:N_GENES]
     R = R_all[:, genes]
-    T_full = {c: mean_of(c) - ctrl for c in test}
-    out = {}
-    for exp in EXPS:
+    T = np.stack([mean_of(c) - ctrl for c in test])[:, genes]
+    S_true = RT.true_sim(T)
+
+    sets, skipped = {}, []
+    for exp in exps:
         base = f"/vol/experiments/{exp}"
-        sets = []
         for kind in ("runs", "baselines"):
             d = os.path.join(base, kind)
-            if os.path.isdir(d):
-                sets += [(kind, r, os.path.join(d, r, "test_predictions.npz")) for r in sorted(os.listdir(d))]
-        for kind, r, path in sets:
-            if not os.path.exists(path):
+            if not os.path.isdir(d):
                 continue
-            z = np.load(path, allow_pickle=False)
-            pmap = dict(zip([str(c) for c in z["conditions"]], z["preds"]))
-            cs = [c for c in test if c in pmap]
-            P = np.stack([pmap[c] - ctrl for c in cs])[:, genes]
-            T = np.stack([T_full[c] for c in cs])[:, genes]
-            out[f"{exp}/{kind}/{r}"] = _scores(P, T, R)
-    # oracle-ish reference: the true held-out deltas themselves (upper bound = 1 on ref/cluster metrics)
-    out["(upper bound) true deltas"] = _scores(np.stack([T_full[c] for c in test])[:, genes],
-                                               np.stack([T_full[c] for c in test])[:, genes], R)
+            for r in sorted(os.listdir(d)):
+                path = os.path.join(d, r, "test_predictions.npz")
+                if not os.path.exists(path):
+                    continue
+                z = np.load(path, allow_pickle=False)
+                pmap = dict(zip([str(c) for c in z["conditions"]], z["preds"]))
+                missing = [c for c in test if c not in pmap]
+                if missing:
+                    skipped.append(f"{exp}/{kind}/{r} (missing {len(missing)} test conditions)")
+                    continue
+                P = np.stack([pmap[c] - ctrl for c in test])[:, genes]
+                pg, S = RT.per_gene_scores(P, T, R)
+                key = f"{exp}/{kind}/{r}"
+                if kind == "baselines":            # baselines depend only on the dataset: keep one copy
+                    short = f"baselines/{r}"
+                    if short not in sets:
+                        key = short
+                    elif np.allclose(sets[short]["P"], P):
+                        continue                   # identical copy in another experiment
+                sets[key] = {"per_gene": pg, "S_pred": S, "P": P}
+    pg_ub, S_ub = RT.per_gene_scores(T, T, R)
+    sets[UPPER] = {"per_gene": pg_ub, "S_pred": S_ub}
+
+    agg = {k: RT.aggregate(v["per_gene"], RT.cluster_agreement(v["S_pred"], S_true)) for k, v in sets.items()}
+    arms = RT.pool_seeds(sets)
+    point, draws = RT.bootstrap_draws(arms, S_true, n_boot=N_BOOT, seed=0)
+    cis = RT.summarize_ci(point, draws)
+    # each deep arm vs linear: its own experiment's linear if that differs from the shared copy
+    lin_of = lambda a: next((x for x in (f"{a.split('/')[0]}/{LINEAR}", LINEAR) if x in arms), None)  # noqa: E731
+    pairs = [(a, lin_of(a)) for a in sorted(arms) if "/runs/" in a and lin_of(a)]
+    pairs += [(a, b) for a, b in PAIRS if a in arms and b in arms]
+    diffs = [{"a": a, "b": b, **RT.diff_ci(point, draws, a, b)} for a, b in pairs]
+    return RT.json_safe({
+        "cache": cache, "exps": exps, "n_test": len(test), "n_ref": len(train), "n_genes": int(len(genes)),
+        "n_boot": N_BOOT, "boot_seed": 0, "test_conditions": test, "skipped": skipped, "metrics": list(RT.METRICS),
+        "aggregates": agg,
+        "set_per_gene": {s: d["per_gene"] for s, d in sets.items()},
+        "arms": {arm: {"members": a["members"], "n_seeds": len(a["members"]), "per_gene": a["per_gene"],
+                       "point_aggregate_seed_mean": _seed_mean([agg[m] for m in a["members"]]),
+                       "ci": cis[arm]} for arm, a in arms.items()},
+        "diffs": diffs,
+    })
+
+
+def _seed_mean(aggs):
+    """A16-style: average per-set aggregates over seeds, skipping undefined (NaN) ones."""
+    out = {}
+    for k in aggs[0]:
+        xs = [x[k] for x in aggs if x[k] == x[k]]
+        out[k] = sum(xs) / len(xs) if xs else float("nan")
     return out
 
 
-@app.local_entrypoint()
-def main():
-    import re
+def _fmt(x, nd=3):
+    return "undef" if x is None or x != x else f"{x:.{nd}f}"
 
-    res = run.remote()
-    os.makedirs("diag/results", exist_ok=True)
-    json.dump(res, open("diag/results/A16_retrieval_raw.json", "w"), indent=1)
-    groups = {}
-    for k, v in res.items():
-        g = re.sub(r"_s\d+(_|$)", r"\1", k)          # pool seeds
-        groups.setdefault(g, []).append(v)
-    keys = ["ref_spearman", "ref_p@5", "cluster_agreement", "id_top1", "id_mean_rank"]
+
+def _ci_cell(c):
+    if c["mean"] is None or c["mean"] != c["mean"]:
+        return "undef"
+    return f"{_fmt(c['mean'])} [{_fmt(c['lo'])}, {_fmt(c['hi'])}]"
+
+
+def _aggregate_table(res):
+    keys = res["metrics"]
     lines = ["| Predictions | n | " + " | ".join(keys) + " |", "|---" * (len(keys) + 2) + "|"]
-    for g, vs in sorted(groups.items()):
-        import math
+    for arm in sorted(res["arms"]):
+        a = res["arms"][arm]
+        cells = [_fmt(a["point_aggregate_seed_mean"][k]) for k in keys]
+        lines.append(f"| {arm} | {a['n_seeds']} | " + " | ".join(cells) + " |")
+    return lines
+
+
+def _ci_markdown(res, tag):
+    METRICS = res["metrics"]
+
+    n = res["n_test"]
+    seeds = sorted({a["n_seeds"] for k, a in res["arms"].items() if "/runs/" in k})
+    L = [f"# {tag}: retrieval metrics with 95% bootstrap CIs", "",
+         f"Cache `{res['cache']}`; experiments {', '.join(res['exps'])}. n_test = {n} held-out genes "
+         f"(chance id_top1 = {1 / n:.3f}, chance id_mean_rank = {(n + 1) / 2:.1f}); {res['n_ref']} reference "
+         f"(training) perturbations; {res['n_genes']} genes.",
+         f"Per-gene scores averaged over seeds, then paired bootstrap over test genes ({res['n_boot']} resamples, "
+         f"rng seed {res['boot_seed']}, percentile CIs). cluster_agreement recomputed on each resampled "
+         "sub-matrix (duplicate-gene pairs dropped; undefined draws skipped).",
+         f"**Small n caveat:** with only {n} test genes the CIs are wide; they cover resampling of these genes "
+         "only (not other gene sets / datasets), and seed variation enters only through the seed average "
+         f"({'/'.join(map(str, seeds)) or '0'} seed(s) per deep arm). NaN per-seed scores (constant "
+         "predictions) are skipped in the seed average.", ""]
+    if res["skipped"]:
+        L += ["Skipped (incomplete prediction sets): " + "; ".join(res["skipped"]), ""]
+    L += ["## Per-arm means [95% CI]", "", "| Arm | seeds | " + " | ".join(METRICS) + " |",
+          "|---" * (len(METRICS) + 2) + "|"]
+    for arm in sorted(res["arms"]):
+        a = res["arms"][arm]
+        L.append(f"| {arm} | {a['n_seeds']} | " + " | ".join(_ci_cell(a["ci"][m]) for m in METRICS) + " |")
+    L += ["", "## Paired differences (A − B): diff [95% CI] (fraction of resamples with diff > 0)", "",
+          "For id_mean_rank lower is better, so a negative difference favours A.", "",
+          "| A | B | " + " | ".join(METRICS) + " |", "|---" * (len(METRICS) + 2) + "|"]
+    for d in res["diffs"]:
         cells = []
-        for k in keys:
-            xs = [x[k] for x in vs if not (isinstance(x[k], float) and math.isnan(x[k]))]
-            cells.append(f"{sum(xs) / len(xs):.3f}" if xs else "undef")
-        lines.append(f"| {g} | {len(vs)} | " + " | ".join(cells) + " |")
-    print("\n".join(lines))
-    with open("diag/results/A16_retrieval.md", "w") as f:
+        for m in METRICS:
+            c = d[m]
+            cells.append("undef" if c["n_valid"] == 0 else
+                         f"{_fmt(c['diff'])} [{_fmt(c['lo'])}, {_fmt(c['hi'])}] ({_fmt(c['frac_gt0'], 2)})")
+        L.append(f"| {d['a']} | {d['b']} | " + " | ".join(cells) + " |")
+    L += ["", "## Point aggregates (per prediction set; seed aggregates averaged — A16 format)", ""]
+    L += _aggregate_table(res)
+    return L
+
+
+@app.local_entrypoint()
+def main(cache: str = CACHE, exps: str = ",".join(EXPS), tag: str = "A17_adamson"):
+    res = run.remote(cache, [e for e in exps.split(",") if e])
+    os.makedirs("diag/results", exist_ok=True)
+    with open(f"diag/results/{tag}_retrieval_ci.json", "w") as f:
+        json.dump(res, f, indent=1, allow_nan=False)
+    lines = _ci_markdown(res, tag)
+    with open(f"diag/results/{tag}_retrieval_ci.md", "w") as f:
         f.write("\n".join(lines) + "\n")
+    print("\n".join(lines))
