@@ -394,6 +394,23 @@ B300 smoke on the kidney cache (bs 32, lr 3e-5, 20 warmup + 200 steps), results 
 - **Concern: low teacher `<cls>` spread from step 0.** Public scGPT was pretrained *without* a `<cls>` objective (`no_cls: true`), so its `<cls>` output is nearly the same for every cell (spread ~0.009). For comparison: kidney JEPA runs sat at 0.03–0.04, and collapsed runs at 0.00002. The JEPA loss falls to 0.015 within 200 steps, which suggests the JEPA term may carry little per-cell signal at first. It is not training-induced collapse (it does not shrink), but it is a risk for the blood run.
 - Deviation: we feed `<cls>` value 0, whereas public scGPT's own embedding code used −2.
 
+## A19. `<cls>` spread pilot: does JEPA learn anything when continuing from public scGPT? (Nov 7)
+
+`diag/cls_pilot.py`, raw output in `diag/results/A19_cls_pilot.jsonl`. JEPA objective, init from public scGPT_human, kidney cache, bs 32, lr 3e-5, 2,000 steps, seed 0. "Constant-guess ref" = the JEPA loss a predictor would get by always outputting the batch-average target. If the real JEPA loss is not far below it, the JEPA term carries no per-cell signal.
+
+| Setting | Step | recon | JEPA loss | constant-guess ref | teacher spread |
+|---|---|---|---|---|---|
+| paper JEPA, `<cls>`=0 | 1 / 500 / 2000 | 82.1 / 15.7 / 15.2 | 1.04 / 0.0042 / **0.0004** | 0.023 / 0.011 / **0.0025** | 0.0092 / 0.0062 / **0.0029** |
+| paper JEPA, `<cls>`=−2 | 1 / 500 / 2000 | 81.4 / 15.8 / 15.2 | 1.03 / 0.0037 / **0.0003** | 0.026 / 0.011 / **0.0018** | 0.0097 / 0.0060 / **0.0024** |
+| `center` variant, `<cls>`=0 | 1 / 500 / 2000 | 82.1 / 16.3 / 15.8 | 0.99 / 0.072 / **0.037** | 0.82 / 0.82 / **0.83** | 0.0092 / 0.0205 / **0.0194** |
+
+Validation at 2,000 steps: paper JEPA val recon 14.63 (`<cls>`=0) / 14.68 (−2); `center` 15.19, with target spread 0.043 (stable).
+
+- **The paper's JEPA slowly collapses when continuing from public scGPT.** Teacher spread falls 0.009 → 0.003. Even a constant guess would score ~0.002, so the JEPA term has almost nothing cell-specific left to teach. Feeding `<cls>`=−2 changes nothing.
+- **`center` carries real per-cell signal.** Its JEPA loss (0.037) is ~20× below the constant-guess reference (0.83), the centred target spread is stable at ~0.042, and the teacher's own spread *doubles* (0.009 → 0.019).
+- **Cost:** slightly worse reconstruction (val 15.19 vs 14.63).
+- **Implication for the blood run:** the paper's JEPA would likely reduce to plain scGPT. A meaningful JEPA-vs-scGPT test from public scGPT needs `center` (a deviation from the paper, recorded). Note: in the kidney from-scratch runs, `faithful` beat `center` on Task 2 (0.606 vs 0.471), so the best variant depends on the starting point.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.
