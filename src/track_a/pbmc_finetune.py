@@ -188,7 +188,7 @@ def run_finetune(cfg: FinetuneConfig, ckpt_dir: str, data: dict, out_dir: str, d
 
     history = []
     steps = math.ceil(len(tr_idx) / cfg.batch_size)
-    log(json.dumps({"msg": "start", "objective": cfg.objective, "variant": cfg.jepa_variant, "n_train": len(tr_idx),
+    log(json.dumps({"msg": "start", "epochs": cfg.epochs, "objective": cfg.objective, "variant": cfg.jepa_variant, "n_train": len(tr_idx),
                     "n_val": len(va_idx), "steps_per_epoch": steps, **{k: conv[k] for k in ("n_loaded", "decoder_loaded")}}))
     for ep in range(cfg.epochs):
         rng = np.random.default_rng([cfg.seed, ep])
@@ -220,6 +220,7 @@ def run_finetune(cfg: FinetuneConfig, ckpt_dir: str, data: dict, out_dir: str, d
                **{f"val_{k}": float(np.mean([r[k] for r in vrec])) for k in vrec[0]}, "t": round(time.time() - t0, 1)}
         history.append(row)
         log(json.dumps(row))
+        commit()  # make the per-epoch log visible on the volume (dashboard)
 
     student.eval()
     emb, info = embed_cells(student, vocab, conv, indptr, indices, vals_all, list(data["gene_symbols"]),
