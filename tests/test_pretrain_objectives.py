@@ -336,6 +336,168 @@ def test_resumed_run_equals_uninterrupted(cache_dir, tmp_path, monkeypatch):
     assert a["history"][-1]["val_recon"] == pytest.approx(b["history"][-1]["val_recon"], rel=1e-5)
 
 
+# ----------------------------------------------------------------------------- init from checkpoint
+
+
+def _tiny_ckpt(tmp_path, vp, seed=123, args=None):
+    """A checkpoint dir in the public scGPT_human layout: flash-attn ``Wqkv`` names, an extra
+    head the student does not have (like scGPT_human's mvc_decoder)."""
+    import os
+
+    d = tmp_path / f"ckpt_{seed}"
+    os.makedirs(d, exist_ok=True)
+    vocab = json.load(open(vp))
+    torch.manual_seed(seed)
+    src = TinyModel(ntoken=len(vocab) + 3)  # + <pad>/<cls>/<eoc> added by SimpleVocab
+    sd = {k.replace("in_proj_", "Wqkv."): v for k, v in src.state_dict().items()}
+    sd["mvc_decoder.w.weight"] = torch.zeros(3, 3)
+    torch.save(sd, d / "best_model.pt")
+    (d / "vocab.json").write_text(json.dumps(vocab))
+    a = {"embsize": D, "nheads": H, "d_hid": 512, "nlayers": 12, "n_layers_cls": 3, "pad_value": -2, "n_bins": 51}
+    (d / "args.json").write_text(json.dumps({**a, **(args or {})}))
+    return str(d), src
+
+
+def test_init_ckpt_loads_weights_and_matches_objectives(cache_dir, tmp_path, monkeypatch):
+    import src.track_a.pretrain as P
+    from src.models import SimpleVocab, state_hash
+
+    monkeypatch.setattr(P, "build_student", _tiny_student)
+    _, vp = cache_dir
+    ck, src = _tiny_ckpt(tmp_path, vp)
+    vocab = SimpleVocab(vp)
+    trs = {o: P.Pretrainer(PretrainConfig(objective=o, d_model=D, nhead=H, init_ckpt=ck), vocab, "cpu")
+           for o in ("jepa", "scgpt")}
+    for o, tr in trs.items():
+        for k, v in src.state_dict().items():
+            assert torch.equal(tr.model.state_dict()[k], v), (o, k)
+        assert tr.init_info["n_loaded"] == len(src.state_dict()) and tr.init_info["not_loaded"] == []
+        assert tr.init_info["loaded_prefixes"] == ["decoder", "encoder", "transformer_encoder", "value_encoder"]
+        assert tr.init_info["n_ckpt_keys_unused"] == 1 and tr.init_info["ckpt_unused_prefixes"] == ["mvc_decoder"]
+    assert trs["jepa"].init_hash == trs["scgpt"].init_hash == state_hash(src)
+    # teacher = copy of the loaded student; predictor freshly initialised (same as random-init path)
+    assert state_hash(trs["jepa"].teacher) == state_hash(src)
+    rnd = P.Pretrainer(PretrainConfig(objective="jepa", d_model=D, nhead=H), vocab, "cpu")
+    assert rnd.init_hash != trs["jepa"].init_hash
+    assert state_hash(rnd.predictor) == state_hash(trs["jepa"].predictor)
+    cfg = trs["jepa"].cfg
+    assert pm.RANDOM_INIT_DEVIATION not in cfg.deviations
+    assert any("<cls> input value = 0" in d for d in cfg.deviations)
+
+
+def test_random_init_path_unchanged(cache_dir, monkeypatch):
+    import src.track_a.pretrain as P
+    from src.models import SimpleVocab, state_hash
+
+    monkeypatch.setattr(P, "build_student", _tiny_student)
+    cfg = PretrainConfig(objective="scgpt", d_model=D, nhead=H)
+    assert cfg.init_ckpt is None and cfg.deviations == list(pm.DEVIATIONS)
+    assert pm.RANDOM_INIT_DEVIATION in cfg.deviations
+    tr = P.Pretrainer(cfg, SimpleVocab(cache_dir[1]), "cpu")
+    assert tr.init_info == {"init_ckpt": None}
+    assert tr.init_hash == state_hash(_tiny_student(SimpleVocab(cache_dir[1]), seed=0))
+
+
+def test_init_ckpt_in_matched_key_and_resolution():
+    a = PretrainConfig(objective="jepa").matched_key()
+    b = PretrainConfig(objective="jepa", init_ckpt="scGPT_human")
+    assert "init_ckpt" in a and a["init_ckpt"] is None and a != b.matched_key()
+    assert P_resolve("scGPT_human") == "/vol/checkpoints/scGPT_human"
+    assert b.matched_key() == PretrainConfig(objective="jepa", init_ckpt="/vol/checkpoints/scGPT_human/").matched_key()
+    assert P_resolve("/x/y/") == "/x/y" and P_resolve(None) is None
+    with pytest.raises(ValueError):
+        PretrainConfig(objective="jepa", init_ckpt="relative/dir")
+
+
+def P_resolve(x):
+    from src.track_a.pretrain import resolve_init_ckpt
+    return resolve_init_ckpt(x)
+
+
+@pytest.mark.parametrize("bad", [{"embsize": 32}, {"nlayers": 6}, {"n_layers_cls": 2}, {"pad_value": 0},
+                                 {"input_emb_style": "category"}])
+def test_init_ckpt_architecture_mismatch_fails(cache_dir, tmp_path, monkeypatch, bad):
+    import src.track_a.pretrain as P
+    from src.models import SimpleVocab
+
+    monkeypatch.setattr(P, "build_student", _tiny_student)
+    ck, _ = _tiny_ckpt(tmp_path, cache_dir[1], args=bad)
+    with pytest.raises(RuntimeError, match="architecture mismatch"):
+        P.Pretrainer(PretrainConfig(objective="scgpt", d_model=D, nhead=H, init_ckpt=ck),
+                     SimpleVocab(cache_dir[1]), "cpu")
+
+
+def test_init_ckpt_missing_encoder_weights_fails(cache_dir, tmp_path, monkeypatch):
+    import src.track_a.pretrain as P
+    from src.models import SimpleVocab
+
+    monkeypatch.setattr(P, "build_student", _tiny_student)
+    ck, _ = _tiny_ckpt(tmp_path, cache_dir[1])
+    sd = torch.load(f"{ck}/best_model.pt")
+    sd.pop("value_encoder.lin.weight")
+    sd["transformer_encoder.layers.0.linear1.weight"] = torch.zeros(3, 3)  # wrong shape
+    torch.save(sd, f"{ck}/best_model.pt")
+    with pytest.raises(RuntimeError, match="encoder weights not loaded") as e:
+        P.Pretrainer(PretrainConfig(objective="jepa", d_model=D, nhead=H, init_ckpt=ck),
+                     SimpleVocab(cache_dir[1]), "cpu")
+    assert "value_encoder.lin.weight" in str(e.value) and "linear1.weight" in str(e.value)
+
+
+def test_init_ckpt_vocab_mismatch_fails(cache_dir, tmp_path, monkeypatch):
+    import src.track_a.pretrain as P
+    from src.models import SimpleVocab
+
+    monkeypatch.setattr(P, "build_student", _tiny_student)
+    ck, _ = _tiny_ckpt(tmp_path, cache_dir[1])
+    v = json.load(open(f"{ck}/vocab.json"))
+    v["G0"], v["G1"] = v["G1"], v["G0"]
+    open(f"{ck}/vocab.json", "w").write(json.dumps(v))
+    with pytest.raises(RuntimeError, match="vocab"):
+        P.Pretrainer(PretrainConfig(objective="jepa", d_model=D, nhead=H, init_ckpt=ck),
+                     SimpleVocab(cache_dir[1]), "cpu")
+
+
+def test_init_ckpt_run_export_and_resume_guard(cache_dir, tmp_path, monkeypatch):
+    import src.track_a.pretrain as P
+
+    monkeypatch.setattr(P, "build_student", _tiny_student)
+    out, vp = cache_dir
+    ck, src = _tiny_ckpt(tmp_path, vp)
+    run, exp = str(tmp_path / "run"), str(tmp_path / "exp")
+    base = dict(objective="jepa", d_model=D, nhead=H, batch_size=8, log_every=2, max_val_cells=16, epochs=1)
+    s = P.run_pretraining(PretrainConfig(init_ckpt=ck, **base), out, vp, run, exp, device="cpu")
+    with open(f"{exp}/args.json") as f:
+        args = json.load(f)
+    from src.models import state_hash
+    assert args["init_ckpt"] == ck and args["init_ckpt_dir"] == ck and args["init_n_loaded"] == len(src.state_dict())
+    assert args["init_state_hash"] == s["init_state_hash"] == state_hash(src)
+    assert "transformer_encoder" in args["init_loaded_prefixes"] and args["cls_value"] == 0
+    assert any("<cls> input value = 0" in d for d in args["deviations"])
+    with open(f"{run}/config.json") as f:
+        assert json.load(f)["init_ckpt_info"]["n_loaded"] == len(src.state_dict())
+    # resume must refuse a different init (random init, or another checkpoint) and another cache
+    with pytest.raises(RuntimeError, match="resume config mismatch"):
+        P.run_pretraining(PretrainConfig(**{**base, "epochs": 2}), out, vp, run, exp, device="cpu")
+    ck2, _ = _tiny_ckpt(tmp_path, vp, seed=7)
+    with pytest.raises(RuntimeError, match="resume config mismatch"):
+        P.run_pretraining(PretrainConfig(init_ckpt=ck2, **{**base, "epochs": 2}), out, vp, run, exp, device="cpu")
+    import shutil
+    other = str(tmp_path / "cache_copy")
+    shutil.copytree(out, other)
+    with pytest.raises(RuntimeError, match="cache_dir"):
+        P.run_pretraining(PretrainConfig(init_ckpt=ck, **{**base, "epochs": 2}), other, vp, run, exp, device="cpu")
+    # a legacy last.pt without cache_dir falls back to the run's config.json
+    lp = f"{run}/last.pt"
+    st = torch.load(lp, weights_only=False)
+    st.pop("cache_dir")
+    torch.save(st, lp)
+    with pytest.raises(RuntimeError, match="cache_dir"):
+        P.run_pretraining(PretrainConfig(init_ckpt=ck, **{**base, "epochs": 2}), other, vp, run, exp, device="cpu")
+    s2 = P.run_pretraining(PretrainConfig(init_ckpt=ck, **{**base, "epochs": 2}), out + "/", vp, run, exp,
+                           device="cpu")
+    assert s2["epochs_completed"] == 2
+
+
 # ----------------------------------------------------------------------------- anti-collapse variants
 def test_jepa_variants_run_and_center_state(tmp_path=None):
     torch = pytest.importorskip("torch")

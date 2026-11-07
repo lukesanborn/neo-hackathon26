@@ -40,6 +40,8 @@ CLS_VALUE = 0.0
 JEPA_WEIGHT = 1000.0
 RECON_WEIGHT = 1.0
 
+RANDOM_INIT_DEVIATION = "Random initialisation (no scGPT_human weights), identical for both objectives (same seed)."
+
 DEVIATIONS = [
     "No official Cell-JEPA code: reimplemented from the paper text (arXiv 2602.02093).",
     "EMA teacher momentum not given in the paper: constant m (default 0.996), no schedule.",
@@ -53,7 +55,7 @@ DEVIATIONS = [
     "Value head = scGPT ExprDecoder (3-layer MLP per token); reconstruction target = bin index.",
     "Checkpoint selection: lowest validation masked-reconstruction MSE (paper silent); the "
     "same rule for both objectives.",
-    "Random initialisation (no scGPT_human weights), identical for both objectives (same seed).",
+    RANDOM_INIT_DEVIATION,  # replaced when PretrainConfig.init_ckpt is set (continued pretraining)
 ]
 
 
