@@ -266,6 +266,35 @@ Raw output in `diag/results/A10_seeds.txt`. Val recon per seed:
 - **Fine-tuning does not improve public scGPT on PBMC.** It drops at first (~0.57 at epoch 5) and recovers to ~0.68–0.69 by epoch 25–30, just under its zero-shot 0.709. The "decrease" in A12 was mostly noise.
 - **Implication for Task 1:** a single seed cannot resolve differences smaller than ~0.07. Use ≥ 3 seeds and report mean ± sd. The paper reports single numbers with no error bars (its gap is 0.783 vs 0.753 = 0.03, below this noise level).
 
+## A14. Matched evaluation of the lr 3e-5 kidney checkpoints (Nov 7)
+
+Launched with `diag/launch_tasks23_lr3e5.py` (ids in `diag/call_ids_A14.json`); status and results via `diag/status_A14.py` → `diag/results/A14_results.json`.
+
+### Task 2: zero-shot PBMC-10K clustering (paper Table 2)
+
+Same procedure and metrics as A11; one embedding pass per checkpoint, deterministic apart from Leiden.
+
+| Embedding | AvgBIO | NMI | ARI | ASW |
+|---|---|---|---|---|
+| **kidney JEPA `faithful` (paper method)** | **0.606** | 0.642 | 0.535 | 0.641 |
+| kidney JEPA `center` | 0.471 | 0.518 | 0.389 | 0.507 |
+| kidney JEPA `token` | 0.428 | 0.463 | 0.286 | 0.536 |
+| **kidney plain scGPT (matched baseline)** | **0.375** | 0.430 | 0.223 | 0.473 |
+| *(A11)* PCA-50, no model | 0.773 | 0.838 | 0.881 | 0.600 |
+| *(A11)* public `scGPT_human` | 0.709 | 0.799 | 0.699 | 0.627 |
+| *(paper)* Cell-JEPA, kidney | 0.719 | 0.769 | 0.808 | 0.581 |
+| *(paper)* scGPT, kidney | 0.529 | 0.559 | 0.495 | 0.533 |
+
+- **The paper's headline result replicates in direction and size.** Kidney JEPA beats matched kidney scGPT by **+0.231 AvgBIO** (paper: +0.191). The win holds on all four metrics: NMI +0.21, ARI +0.31, ASW +0.17.
+- Both of our numbers sit ~0.11–0.15 below the paper's. Likely reasons: our lr 3e-5 deviation, scheduling details, and 4 epochs on our cache (we can't match the paper's exact training).
+- The paper's own JEPA objective (`faithful`) beats both anti-collapse variants (`center` 0.471, `token` 0.428). Every JEPA variant beats plain scGPT.
+- **Caveat:** PCA-50 (0.773) still beats every model, including the paper's reported Cell-JEPA. The paper never compared against PCA.
+- Not yet checked: seed variation. Each pretraining run is a single seed; the embedding step is deterministic.
+
+### Task 3: Adamson perturbation, 16 runs
+
+*Running.*
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.

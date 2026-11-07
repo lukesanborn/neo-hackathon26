@@ -33,8 +33,8 @@ The paper (arXiv 2602.02093) has three evaluations, all comparing kidney-pretrai
 - ✅ Embedding extraction (scGPT's zero-shot procedure; `src/track_a/pbmc.py`, `modal_pbmc.py`)
 - ✅ Metrics: scib-equivalent NMI / ARI / ASW / AvgBIO
 - ✅ Ran on PCA-50 (**0.773**, beats the paper's Cell-JEPA 0.719), public scGPT (0.709), all existing kidney checkpoints (best 0.413) (A11)
-- ⬜ Run on the lr 3e-5 kidney checkpoints (matched JEPA vs scGPT) once A9 finishes
-- ⬜ Compare with Table 2 (0.719 vs 0.529)
+- ✅ Run on the lr 3e-5 kidney checkpoints (A14): **JEPA 0.606 vs scGPT 0.375** (+0.23)
+- ✅ Compare with Table 2 (paper 0.719 vs 0.529, +0.19): **direction and size replicate**; both ~0.12 lower in absolute terms; PCA (0.773) beats all
 
 ## 3. Task 1: fine-tuning for cell-type clustering on PBMC-10K
 - ✅ Implement the fine-tune loop: GEP + GEPC + ECS (+ JEPA for Cell-JEPA), 40% masking, Adam 1e-4 ×0.9/epoch, batch 64, 30 epochs, 9:1 split with seed 42 (App. E.2) (`src/track_a/pbmc_finetune.py`)

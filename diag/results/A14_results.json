@@ -1,0 +1,30 @@
+{
+ "T2 zeroshot scgpt_kidney_lr3e5": {
+  "AvgBIO": 0.37531963731502466,
+  "NMI": 0.4303005910466109,
+  "ARI": 0.22285244833891574,
+  "ASW": 0.4728058725595474,
+  "best_resolution": 1.1
+ },
+ "T2 zeroshot jepa_kidney_lr3e5": {
+  "AvgBIO": 0.6060674073993423,
+  "NMI": 0.6418763117582399,
+  "ARI": 0.5352301082518676,
+  "ASW": 0.6410958021879196,
+  "best_resolution": 0.1
+ },
+ "T2 zeroshot jepa_kidney_lr3e5_token": {
+  "AvgBIO": 0.428133856110886,
+  "NMI": 0.4629166454676514,
+  "ARI": 0.2857815841823551,
+  "ASW": 0.5357033386826515,
+  "best_resolution": 0.3
+ },
+ "T2 zeroshot jepa_kidney_lr3e5_center": {
+  "AvgBIO": 0.4713337731718608,
+  "NMI": 0.5183016200403562,
+  "ARI": 0.3888271754335438,
+  "ASW": 0.5068725240416825,
+  "best_resolution": 0.3
+ }
+}
