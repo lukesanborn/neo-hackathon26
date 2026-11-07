@@ -8,7 +8,8 @@ Per finished checkpoint, spawns (all on deployed apps, all in parallel):
 Then waits for everything and writes one JSON line per job to diag/results/A14_downstream.txt.
 Call ids go to diag/call_ids_A14.json as they are spawned.
 
-Run from the repo root (keep it running):  .venv/bin/python diag/launch_after_pretrain.py
+NOT USED: the team reviews results before each next step (stopped before it spawned anything).
+Run from the repo root:  .venv/bin/python diag/launch_after_pretrain.py
 """
 import json
 import time
