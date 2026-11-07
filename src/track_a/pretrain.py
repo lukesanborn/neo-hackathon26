@@ -34,7 +34,8 @@ import torch
 from src.models import SimpleVocab, state_hash
 
 from .pretrain_model import (CLS_VALUE, DEVIATIONS, MASK_VALUE, OBJECTIVES, PAD_VALUE, TRACK_LABEL,
-                             CLSPredictor, build_student, ema_update, forward_losses, make_teacher,
+                             CLSPredictor, JEPA_VARIANTS, VARIANT_DESCRIPTIONS, build_student, ema_update,
+                             forward_losses, make_teacher,
                              random_value_mask)
 
 PAPER_N_CELLS = 814_000
@@ -68,6 +69,7 @@ class PretrainConfig:
     grad_clip: float = 1.0
     precision: str = "bf16"
     ema_momentum: float = 0.996     # jepa only
+    jepa_variant: str = "faithful"  # jepa only: faithful | center | vicreg | token (see pretrain_model)
     predictor_seed_offset: int = 10_000
     # budget / bookkeeping
     max_minutes: float = 23 * 60.0
@@ -82,6 +84,11 @@ class PretrainConfig:
 
     def __post_init__(self):
         assert self.objective in OBJECTIVES, self.objective
+        assert self.jepa_variant in JEPA_VARIANTS, self.jepa_variant
+        if self.objective == "jepa" and self.jepa_variant != "faithful":
+            d = VARIANT_DESCRIPTIONS[self.jepa_variant]
+            if d not in self.deviations:
+                self.deviations = list(self.deviations) + [d]
 
     def matched_key(self) -> dict:
         """Fields that must agree between a run and its resume (schedule length may grow)."""
@@ -223,6 +230,7 @@ class Pretrainer:
         self.amp = dict(device_type="cuda" if str(device).startswith("cuda") else "cpu",
                         dtype=torch.bfloat16, enabled=cfg.precision == "bf16")
         self.cls_id, self.pad_id = vocab["<cls>"], vocab["<pad>"]
+        self.jepa_state: dict = {}   # e.g. the EMA centre for jepa_variant="center"
 
     def to_device(self, nb: dict) -> dict:
         return {k: torch.from_numpy(nb[k]).to(self.device, non_blocking=True)
@@ -238,7 +246,7 @@ class Pretrainer:
         if self.predictor is not None:
             self.predictor.train()
         out = forward_losses(self.cfg.objective, self.model, self.teacher, self.predictor, self.to_device(nb),
-                             self.cfg.nhead, self.amp)
+                             self.cfg.nhead, self.amp, self.cfg.jepa_variant, self.jepa_state, update_state=True)
         self.opt.zero_grad(set_to_none=True)
         out["loss"].backward()
         gn = torch.nn.utils.clip_grad_norm_(self.params, self.cfg.grad_clip)
@@ -260,19 +268,21 @@ class Pretrainer:
             nb = collate(cache, cells[i:i + bs], self.cfg.max_genes, self.cfg.mask_ratio,
                          batch_rng(self.cfg.seed, VAL_EPOCH_KEY, i // bs), self.cls_id, self.pad_id)
             out = forward_losses(self.cfg.objective, self.model, self.teacher, self.predictor, self.to_device(nb),
-                                 self.cfg.nhead, self.amp)
+                                 self.cfg.nhead, self.amp, self.cfg.jepa_variant, self.jepa_state)
             # recon: token-weighted (exact mean over all masked tokens); jepa: cell-weighted
             w_tok, w_cell = float(nb["masked"].sum()), len(nb["gene_ids"])
             sums["recon"] = sums.get("recon", 0.0) + float(out["recon"]) * w_tok
             n_tok += w_tok
-            for k in ("jepa", "teacher_cls_std"):
+            for k in ("jepa", "teacher_cls_std", "target_spread", "teacher_tok_std", "var_loss"):
                 if k in out:
                     sums[k] = sums.get(k, 0.0) + float(out[k]) * w_cell
             n_cell += w_cell
         res = {"val_recon": sums["recon"] / max(n_tok, 1.0)}
         if "jepa" in sums:
             res["val_jepa"] = sums["jepa"] / max(n_cell, 1)
-            res["val_teacher_cls_std"] = sums["teacher_cls_std"] / max(n_cell, 1)
+            for k in ("teacher_cls_std", "target_spread", "teacher_tok_std", "var_loss"):
+                if k in sums:
+                    res[f"val_{k}"] = sums[k] / max(n_cell, 1)
             res["val_loss"] = 1000.0 * res["val_jepa"] + res["val_recon"]
         else:
             res["val_loss"] = res["val_recon"]
@@ -281,7 +291,8 @@ class Pretrainer:
     def state(self) -> dict:
         return {"model": self.model.state_dict(), "opt": self.opt.state_dict(), "sched": self.sched.state_dict(),
                 "teacher": self.teacher.state_dict() if self.teacher is not None else None,
-                "predictor": self.predictor.state_dict() if self.predictor is not None else None}
+                "predictor": self.predictor.state_dict() if self.predictor is not None else None,
+                "jepa_state": {k: v.detach().cpu() for k, v in self.jepa_state.items()}}
 
     def load(self, st: dict):
         self.model.load_state_dict(st["model"])
@@ -291,6 +302,7 @@ class Pretrainer:
             self.teacher.load_state_dict(st["teacher"])
         if self.predictor is not None:
             self.predictor.load_state_dict(st["predictor"])
+        self.jepa_state = {k: v.to(self.device) for k, v in (st.get("jepa_state") or {}).items()}
 
 
 # ============================================================================ helpers

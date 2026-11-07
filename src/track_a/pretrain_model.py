@@ -156,6 +156,30 @@ def masked_mse(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> 
     return (((pred.float() - target.float()) ** 2) * m).sum() / m.sum().clamp_min(1.0)
 
 
+# Anti-collapse ablations (deviations from the paper; "faithful" = paper as written).
+#   center : DINO-style centring — target = teacher cls − EMA mean of teacher cls (momentum 0.9),
+#            so the predictor must explain per-cell deviations, not the shared component.
+#   vicreg : faithful target + VICReg variance hinge on the student <cls> (per-dim batch std ≥ 1).
+#   token  : I-JEPA-style — predict layer-normed teacher embeddings of the MASKED gene tokens
+#            (per-token targets) instead of the <cls> embedding.
+JEPA_VARIANTS = ("faithful", "center", "vicreg", "token")
+CENTER_MOMENTUM = 0.9
+VAR_WEIGHT = 1.0
+VARIANT_DESCRIPTIONS = {
+    "center": "anti-collapse: JEPA target centred by an EMA (m=0.9) of teacher <cls> embeddings (DINO-style)",
+    "vicreg": "anti-collapse: VICReg variance hinge (weight 1.0, gamma 1.0) on student <cls> added to the JEPA term",
+    "token": "anti-collapse: token-level JEPA — predictor maps student masked-token outputs to layer-normed teacher "
+             "masked-token embeddings (I-JEPA style) instead of <cls>",
+}
+
+
+def variance_hinge(e: torch.Tensor, gamma: float = 1.0, eps: float = 1e-4) -> torch.Tensor:
+    """VICReg variance term: mean over dims of relu(gamma − std across the batch)."""
+    if e.shape[0] < 2:
+        return torch.zeros((), device=e.device)
+    return F.relu(gamma - torch.sqrt(e.float().var(0) + eps)).mean()
+
+
 @torch.no_grad()
 def cls_spread(e: torch.Tensor) -> torch.Tensor:
     if e.shape[0] < 2:
@@ -171,7 +195,8 @@ def combine(objective: str, recon: torch.Tensor, jepa: torch.Tensor | None) -> t
 
 
 def forward_losses(objective: str, student: nn.Module, teacher: nn.Module | None, predictor: nn.Module | None,
-                   batch: dict, nhead: int, amp: dict) -> dict:
+                   batch: dict, nhead: int, amp: dict, variant: str = "faithful", state: dict | None = None,
+                   update_state: bool = False) -> dict:
     """Single student forward on the masked sequence (+ teacher forward on the unmasked one).
 
     batch: gene_ids (B,L) long, values (B,L) float (true bins; cls 0, pad -2),
@@ -192,10 +217,31 @@ def forward_losses(objective: str, student: nn.Module, teacher: nn.Module | None
         # and avoids a second (B*nhead, L, L) mask. Pad query rows still see real keys -> no NaN.
         with torch.no_grad(), torch.autocast(**amp):
             xt = teacher.encoder(gids) + teacher.value_encoder(vals)
-            ht = teacher.transformer_encoder(xt, src_key_padding_mask=pad)[:, 0]
-        with torch.autocast(**amp):
-            z = predictor(h[:, 0])
-        jl = jepa_cosine_loss(z, ht)
+            Ht = teacher.transformer_encoder(xt, src_key_padding_mask=pad)
+        ht = Ht[:, 0]
+        if variant == "token":
+            tgt = F.layer_norm(Ht[masked].float(), (Ht.shape[-1],))
+            with torch.autocast(**amp):
+                z = predictor(h[masked])
+            jl = jepa_cosine_loss(z, tgt)
+            out["teacher_tok_std"] = cls_spread(tgt)
+        else:
+            tgt = ht.float()
+            if variant == "center":
+                c = (state or {}).get("center")
+                if c is None:
+                    c = tgt.mean(0).detach()
+                if update_state and state is not None:
+                    state["center"] = (CENTER_MOMENTUM * c + (1 - CENTER_MOMENTUM) * tgt.mean(0)).detach()
+                tgt = tgt - c
+                out["target_spread"] = cls_spread(tgt)
+            with torch.autocast(**amp):
+                z = predictor(h[:, 0])
+            jl = jepa_cosine_loss(z, tgt)
+            if variant == "vicreg":
+                vr = variance_hinge(h[:, 0])
+                out["var_loss"] = vr
+                jl = jl + VAR_WEIGHT * vr
         out["jepa"] = jl
         # collapse diagnostic (not a loss): per-dim std across the batch of L2-normalised teacher
         # <cls> embeddings; ~0 means every cell maps to the same target.
