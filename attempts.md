@@ -377,6 +377,23 @@ Key paired differences, diff [95% CI] (fraction of resamples > 0):
 - **The only CI-supported JEPA effect:** with public scGPT, the Cell-JEPA fine-tune recipe recovers the similarity structure among held-out genes better than the scGPT recipe (cluster agreement +0.29).
 - **22 genes are too few.** The CIs only cover gene resampling, not seed variance, so the true uncertainty is larger. This motivates the Replogle evaluation (Step 2).
 
+## A18. Continued pretraining from public scGPT: code + smoke test (Nov 7)
+
+New `PretrainConfig.init_ckpt` (merged from `worker/init-ckpt`). It loads public scGPT_human weights (159 keys: encoder, value_encoder, transformer_encoder, decoder) into the student before training. The JEPA teacher is a copy of the loaded student. Both objectives start from the identical init hash `4aba96aff0547947`. There is a `--cache` override to pretrain on another corpus.
+
+B300 smoke on the kidney cache (bs 32, lr 3e-5, 20 warmup + 200 steps), results in `/vol/trackA/pretrain_pilot/B300_scgpt_human_init.json`:
+
+| | scGPT objective | JEPA objective |
+|---|---|---|
+| train recon, step 0 → 200 | 82.1 → 12.7 | 82.1 → 13.2 |
+| JEPA loss | — | 1.04 → 0.015 |
+| teacher `<cls>` spread | — | 0.0092 → 0.0085 (range 0.0085–0.0102) |
+| s/step | 0.043 | 0.051 |
+
+- Loading works: recon starts at 82 instead of ~1,500 from random init.
+- **Concern: low teacher `<cls>` spread from step 0.** Public scGPT was pretrained *without* a `<cls>` objective (`no_cls: true`), so its `<cls>` output is nearly the same for every cell (spread ~0.009). For comparison: kidney JEPA runs sat at 0.03–0.04, and collapsed runs at 0.00002. The JEPA loss falls to 0.015 within 200 steps, which suggests the JEPA term may carry little per-cell signal at first. It is not training-induced collapse (it does not shrink), but it is a risk for the blood run.
+- Deviation: we feed `<cls>` value 0, whereas public scGPT's own embedding code used −2.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.
