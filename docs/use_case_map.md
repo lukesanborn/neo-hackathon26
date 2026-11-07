@@ -193,3 +193,100 @@ We have evidence for none of these yet. Step 1 runs on predictions already saved
 - [Replogle et al., genome-scale Perturb-seq (Cell 2022)](https://pesquisa.bvsalud.org/portal/resource/e/mdl-35688146)
 - [Stoeger et al., understudied genes](https://pmc.ncbi.nlm.nih.gov/articles/PMC6759675)
 - [Drug development timeline (target ID 1–2 yr)](https://intuitionlabs.ai/articles/drug-development-timeline-explained)
+
+---
+
+## 7. Side-by-side: today's decision tree vs ours (assuming every claim validates)
+
+### Cost / time reference for every option
+
+| Option | Money | Time | Output per gene | Hard constraint |
+|---|---|---|---|---|
+| Literature + homology | $0 | days | prose, if it exists | nothing to read for ~80% of genes |
+| Public data mining (DepMap, co-expression, STRING) | $0 | days–weeks | correlational hypothesis | cancer lines only; not your cell type; correlational |
+| Bulk pooled screen | cheapest | 12–20 wk genome-wide<br>8–16 wk sub-library | **one number** ("does it matter?") | one-dimensional readout |
+| **Perturb-seq** | **10–25× bulk per gene**<br>$100k–$1M genome-scale | 12–20 wk | **full transcriptome** → clustering, function assignment | **~500 cells per perturbation** |
+| Arrayed follow-up | high upfront (automation) | +4–5 wk | per-well, imaging-capable | focused gene sets only |
+| **Model prediction (ours)** | **$0 marginal** | **hours** | predicted transcriptome | **needs a screen in the same system to train on** |
+
+### TODAY
+
+```
+"What does gene X do?"  (X poorly characterised)
+│
+├─ 1. Literature / homology ................ $0 · days
+│     └─ answer exists for well-studied genes → STOP
+│        (for ~80% of genes there is nothing to read)
+│
+├─ 2. Public data mining ................... $0 · days–weeks
+│     DepMap co-essentiality · co-expression · STRING · mouse KO
+│     └─ correlational hypothesis — THE FREE DEFAULT, often where it ends
+│        incumbent for function assignment: co-essentiality clustering
+│        (Wainberg 2021 → 108 uncharacterised genes)
+│
+└─ 3. Need causal, context-specific evidence → run a screen
+      │
+      ├─ Bulk pooled ......... cheapest · 12–20 wk · ONE number per gene
+      │
+      ├─ Perturb-seq ......... 10–25×   · 12–20 wk · FULL profile per gene
+      │     └─ cluster by effect → assign function
+      │        ~500 cells/perturbation, so cell count caps the gene count
+      │
+      └─ Arrayed follow-up ... high upfront · +4–5 wk · validate hits
+```
+
+### WITH THE MODEL (every claim validated)
+
+Steps 1 and 2 are **unchanged** — still free, still first. Nothing we build displaces them.
+
+```
+└─ 3. Need causal, context-specific evidence
+      │
+      ├─ Run Perturb-seq on the subset you can afford / have cells for
+      │        ........................ same cost and time as today
+      │                    │
+      │                    ▼
+      │        ╔═══════════════════════════════════╗
+      │        ║  MODEL EXTENDS IT   $0 · hours    ║
+      │        ╚═══════════════════════════════════╝
+      │                    │
+      │        ┌───────────┼───────────────┐
+      │        ▼           ▼               ▼
+      │   genes you    gene PAIRS      other contexts
+      │   left out     (~200M)         (cell types, doses)
+      │        └───────────┴───────────────┘
+      │                    ▼
+      │    predicted responses clustered against measured ones
+      │                    ▼
+      │    ranked shortlist + functional hypotheses
+      │                    ▼
+      └─ Arrayed validation ... +4–5 wk, same as today
+           but a better-chosen shortlist
+```
+
+### What actually changes, ranked by how defensible it is
+
+| Branch | Value | Honest strength |
+|---|---|---|
+| **Cell-limited systems** | A biopsy yielding 50,000 cells supports ~100 perturbations at 500 cells each. The other 19,900 genes are unreachable **at any budget**. Prediction is the only option. | **Strongest.** A cell-count limit cannot be bought away, unlike a cost limit |
+| **Gene pairs** | ~200M combinations; no pooling strategy reaches them. Train on singles, predict pairs. | **Strong** — but we have never tested it (Adamson is single-gene only) |
+| **New contexts** | Each cell type/timepoint is a fresh 12–20 wk screen | Strong in principle; known to be hard; untested by us |
+| **Genes left out of a screen** | Predict what you didn't include | **Weakest.** Pooled screens scale sub-linearly — you could have added them for little extra |
+
+### Assumptions this tree depends on
+
+Every one is currently unproven:
+
+1. Predictions carry enough functional signal to cluster usefully. **Partly tested** — real but
+   weak: ~¼ of recoverable structure, and only after centring (`docs/clustering_finding.md`).
+2. Predicted clustering beats free co-essentiality clustering. **Untested.**
+3. Single-gene training transfers to pairs. **Untested.**
+4. Training transfers across cell contexts. **Untested, known to be hard.**
+5. A model trained on a small screen (the cell-limited case) still works. **Untested** — our
+   models trained on 58 perturbations; a biopsy-scale screen might give far fewer.
+
+### The honest headline
+
+> We do not remove a step. The screen still happens. What changes is how much you get out of the
+> one screen you could afford — and whether you can reach perturbations that no screen can.
+
