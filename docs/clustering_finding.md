@@ -168,3 +168,96 @@ Vincent's fine-tuning produces can be scored on it immediately, and **a win here
 the application story than a win on delta RMSE** — it converts directly into validation wells saved.
 
 The bar to beat is the linear baseline's 4/5, not the other foundation models.
+
+---
+
+# Addendum 2: the inverse direction — profile → which gene was knocked down?
+
+Measured 2026-11-07, same Track B predictions. Reproduce with:
+
+```bash
+python scripts/inverse_retrieval.py reports/demo.html
+```
+
+## What the inverse task is, and why it needs no new model
+
+Forward: gene → predicted response. Inverse: response → which perturbation produced it?
+
+You answer the inverse question by running the **forward** model over every candidate and ranking
+by similarity to the query. The inverse problem is the forward model used as a search index — so
+nothing new has to be trained. But it scores a different property: not how accurate each
+prediction is, but how **discriminable** predictions are from each other.
+
+Three variants, very different in value:
+
+| Variant | Status |
+|---|---|
+| "Which guide is in this cell?" | Already solved experimentally by barcode capture; Mixscape handles the QC version |
+| **"Which knockdown would produce this desired state?"** | **The valuable one — target discovery** |
+| "What is dysregulated in this patient sample?" | Connectivity Map territory |
+
+**Incumbent:** the Connectivity Map / LINCS L1000 — ~1.5M profiles covering ~5,000 small molecules
+and ~3,000 genetic reagents, queryable at clue.io, with the standard workflow being to find
+perturbations whose signature *opposes* a disease signature. A model competes only where CMap has
+no coverage: perturbations it never profiled, and the lab's own cell context.
+
+## A. Is the inverse task well-posed?
+
+| | median nearest-other-gene cosine | pairs > 0.9 | worst pair |
+|---|---|---|---|
+| Raw | 0.912 | 14/22 | AMIGO3 ~ GMPPB (0.967) |
+| **Shared component removed** | **0.647** | **2/22** | BHLHE40 ~ CREB1 (0.973) |
+
+Raw responses look highly confusable, but most of that is the generic perturbation signature.
+After removing it, only 2 of 22 perturbations have a near-twin. **The task is well-posed** —
+real knockdowns produce genuinely distinguishable responses.
+
+## B. Retrieval accuracy (shared component removed)
+
+| Method | top-1 (random 5%) | p | top-5 (random 23%) | p |
+|---|---|---|---|---|
+| **scGPT (matched)** | **27%** | **0.0003** | 45% | 0.0085 |
+| **scGPT + JEPA aux** | 18% | 0.0128 | **68%** | **<0.0001** |
+| Linear (PCA baseline) | 9% | 0.26 (n.s.) | 41% | 0.036 |
+| Training mean | — | — | — | — (identical predictions) |
+| No change | — | — | — | — (identical predictions) |
+
+## The finding: this is where foundation models earn their keep
+
+**First metric on which the foundation models clearly beat the linear baseline.** Linear's top-1
+(9%) is statistically indistinguishable from random; both foundation models are strongly
+significant.
+
+The reason is mechanical. Retrieval needs predictions that *differ* from each other in the right
+way. Linear's predictions are 99% shared component — too homogeneous to discriminate. The
+foundation models sit at 94–95%, and that extra diversity is apparently enough.
+
+Scoreboard across every metric measured so far:
+
+| Metric | Winner |
+|---|---|
+| delta RMSE | linear |
+| Clustering structure (centred) | jepa ≈ linear > scgpt |
+| precision@k, forward ranking | linear (80% @5) |
+| **Inverse retrieval** | **scgpt, jepa ≫ linear** |
+
+Different metrics, different winners — which is itself the headline. No single number summarises
+"is this model good", and the one we led with (delta RMSE) favours exactly the methods that cannot
+perform the inverse task at all.
+
+## Caveats
+
+- **Scale.** A 22-candidate database is far easier than the thousands a real application searches.
+  Top-1 of 27% here is an **upper bound** on what the same model would manage against 2,000
+  candidates; expect a steep drop.
+- The query here is a *measured knockdown response*. A real target-discovery query is a *desired
+  state* that no perturbation may produce exactly. This test shows predictions are discriminative,
+  not that the search finds useful answers.
+- 22 perturbations; one cell line; single-gene knockdowns only.
+
+## Implication
+
+If the team wants to pursue the inverse framing, it is supported by the evidence we have and it is
+the first direction where our models beat the simple baselines. It needs no new model — only the
+search harness, which this script is. The honest bar is **CMap coverage**: the pitch has to be
+about perturbations or contexts CMap does not already contain.
