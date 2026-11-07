@@ -2,11 +2,13 @@
 
 Reads the kidney cache contract (``shards/shard_{k:03d}.npz`` with indptr / gene_ids / bins /
 n_cells, ``split.json`` with ``val_cells``), trains one objective ("jepa" or "scgpt") from a
-seeded random initialisation, checkpoints every epoch (+ every ``save_every_minutes`` and at a
+seeded random initialisation or, with ``init_ckpt``, from a pretrained checkpoint (continued
+pretraining, e.g. public scGPT_human), checkpoints every epoch (+ every ``save_every_minutes`` and at a
 time-budget stop) and resumes from ``last.pt``. Exports to the checkpoint contract
 (``args.json`` / ``best_model.pt`` / ``last.pt`` / ``vocab.json``).
 
-Matching between objectives: same seed -> identical student init (state hash logged), identical
+Matching between objectives: same seed (and same ``init_ckpt``) -> identical student init (state
+hash logged, taken after checkpoint loading), identical
 epoch cell order, gene sub-sampling and value masks (all drawn from numpy RNGs keyed by
 (seed, epoch, step)), identical optimiser / schedule. Only the loss differs.
 
@@ -31,9 +33,10 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 import torch
 
-from src.models import SimpleVocab, state_hash
+from src.models import LOAD_PREFIXES, SimpleVocab, state_hash
 
-from .pretrain_model import (CLS_VALUE, DEVIATIONS, MASK_VALUE, OBJECTIVES, PAD_VALUE, TRACK_LABEL,
+from .pretrain_model import (CLS_VALUE, DEVIATIONS, MASK_VALUE, OBJECTIVES, PAD_VALUE, RANDOM_INIT_DEVIATION,
+                             TRACK_LABEL,
                              CLSPredictor, JEPA_VARIANTS, VARIANT_DESCRIPTIONS, build_student, ema_update,
                              forward_losses, make_teacher,
                              random_value_mask)
@@ -43,6 +46,15 @@ PAPER_N_CELLS = 814_000
 # ~814k cells x 4 / 32 ~= 102k steps, consistent with the paper's ~1 day on one A5000.
 PAPER_EPOCHS = 4
 VAL_EPOCH_KEY = 1_000_000  # RNG key for the fixed validation batches
+VOL_CHECKPOINTS = "/vol/checkpoints"
+NAMED_INIT_CKPTS = {"scGPT_human": f"{VOL_CHECKPOINTS}/scGPT_human"}
+INIT_ARCH_KEYS = (("embsize", "d_model"), ("nheads", "nhead"), ("d_hid", "d_hid"), ("nlayers", "nlayers"),
+                  ("n_layers_cls", "nlayers_cls"))
+INIT_REQUIRED_PREFIXES = LOAD_PREFIXES  # encoder / value_encoder / transformer_encoder
+CLS_VALUE_DEVIATION = (
+    "<cls> input value = 0 (CLS_VALUE, our cache/pretraining convention), whereas public scGPT's own "
+    "embedding code feeds pad_value (-2) at <cls> (and scGPT_human was pretrained without a <cls> "
+    "objective). Kept at 0 for consistency with the rest of our pipeline.")
 
 
 @dataclass
@@ -73,6 +85,9 @@ class PretrainConfig:
     ema_momentum: float = 0.996     # jepa only
     jepa_variant: str = "faithful"  # jepa only: faithful | center | vicreg | token (see pretrain_model)
     predictor_seed_offset: int = 10_000
+    # initialisation: None = seeded random init; "scGPT_human" (-> /vol/checkpoints/scGPT_human) or an
+    # absolute checkpoint dir (args.json / vocab.json / best_model.pt) = continued pretraining
+    init_ckpt: str | None = None
     # budget / bookkeeping
     max_minutes: float = 23 * 60.0
     reserve_minutes: float = 10.0
@@ -91,6 +106,14 @@ class PretrainConfig:
             d = VARIANT_DESCRIPTIONS[self.jepa_variant]
             if d not in self.deviations:
                 self.deviations = list(self.deviations) + [d]
+        if self.init_ckpt is not None:
+            resolve_init_ckpt(self.init_ckpt)  # validates the name / path form
+            init_dev = (f"Continued pretraining: student initialised from {self.init_ckpt} "
+                        f"({resolve_init_ckpt(self.init_ckpt)}/best_model.pt; all name+shape-matching keys, "
+                        "flash-attn Wqkv renamed to in_proj_), identical for both objectives; JEPA predictor "
+                        "newly initialised; teacher = copy of the loaded student.")
+            devs = [d for d in self.deviations if d != RANDOM_INIT_DEVIATION]
+            self.deviations = devs + [d for d in (init_dev, CLS_VALUE_DEVIATION) if d not in devs]
 
     def matched_key(self) -> dict:
         """Fields that must agree between a run and its resume (schedule length may grow)."""
@@ -98,7 +121,63 @@ class PretrainConfig:
         for k in ("epochs", "max_minutes", "reserve_minutes", "save_every_minutes", "log_every",
                   "prefetch", "loader_threads", "deviations"):
             d.pop(k)
+        d["init_ckpt"] = resolve_init_ckpt(d["init_ckpt"])  # "scGPT_human" == its absolute dir
         return d
+
+
+def resolve_init_ckpt(init_ckpt: str | None) -> str | None:
+    """None -> None; a known name (``NAMED_INIT_CKPTS``) -> its volume dir; else an absolute dir."""
+    if init_ckpt is None:
+        return None
+    if init_ckpt in NAMED_INIT_CKPTS:
+        return NAMED_INIT_CKPTS[init_ckpt]
+    if not os.path.isabs(init_ckpt):
+        raise ValueError(f"init_ckpt must be one of {sorted(NAMED_INIT_CKPTS)} or an absolute dir: {init_ckpt!r}")
+    return init_ckpt.rstrip("/")
+
+
+def load_init_checkpoint(model: torch.nn.Module, cfg: PretrainConfig, vocab: SimpleVocab) -> dict:
+    """Load ``<ckpt>/best_model.pt`` into ``model`` in place (continued pretraining).
+
+    Fails loudly if the checkpoint's architecture args or vocab differ from ours, or if any
+    encoder / value_encoder / transformer_encoder weight is not loaded. Every other
+    name+shape match (e.g. the expression decoder) is loaded too; the rest keeps its seeded
+    random init."""
+    ckpt_dir = resolve_init_ckpt(cfg.init_ckpt)
+    with open(os.path.join(ckpt_dir, "args.json")) as f:
+        args = json.load(f)
+    bad = {a: (args[a], getattr(cfg, c)) for a, c in INIT_ARCH_KEYS if a in args and args[a] != getattr(cfg, c)}
+    missing_args = [a for a, _ in INIT_ARCH_KEYS[:4] if a not in args]
+    # value semantics: continuous value encoder fed bin indices, same pad / mask values
+    for a, ours in (("input_emb_style", "continuous"), ("pad_value", PAD_VALUE), ("mask_value", MASK_VALUE)):
+        if a in args and args[a] != ours:
+            bad[a] = (args[a], ours)
+    if bad or missing_args:
+        raise RuntimeError(f"init_ckpt {ckpt_dir}: architecture mismatch (ckpt, ours) {bad}; "
+                           f"missing args {missing_args}")
+    ck_vocab = SimpleVocab(os.path.join(ckpt_dir, "vocab.json"))
+    if ck_vocab.stoi != vocab.stoi:
+        diff = len(set(ck_vocab.stoi.items()) ^ set(vocab.stoi.items()))
+        raise RuntimeError(f"init_ckpt {ckpt_dir}: vocab.json differs from ours ({diff} differing entries)")
+    sd = torch.load(os.path.join(ckpt_dir, "best_model.pt"), map_location="cpu")
+    sd = {k.replace("Wqkv.", "in_proj_"): v for k, v in sd.items()}
+    own = model.state_dict()
+    hit = [k for k in own if k in sd and tuple(sd[k].shape) == tuple(own[k].shape)]
+    required = [k for k in own if k.startswith(INIT_REQUIRED_PREFIXES)]
+    not_loaded_required = sorted(set(required) - set(hit))
+    if not required or not_loaded_required:
+        raise RuntimeError(f"init_ckpt {ckpt_dir}: encoder weights not loaded: {not_loaded_required[:10]}")
+    own.update({k: sd[k].to(own[k].dtype) for k in hit})
+    model.load_state_dict(own)
+    return {"init_ckpt": cfg.init_ckpt, "init_ckpt_dir": ckpt_dir, "n_loaded": len(hit), "n_model_keys": len(own),
+            "loaded_prefixes": sorted({k.split(".")[0] for k in hit}),
+            "not_loaded": sorted(set(own) - set(hit)),
+            "n_ckpt_keys_unused": len(set(sd) - set(hit)),
+            "ckpt_unused_prefixes": sorted({k.split(".")[0] for k in set(sd) - set(hit)}),
+            "ckpt_args": {a: args.get(a) for a in ("embsize", "nheads", "d_hid", "nlayers", "n_layers_cls",
+                                                   "n_bins", "pad_value", "mask_value", "input_emb_style",
+                                                   "fast_transformer")},
+            "cls_value_used": CLS_VALUE}
 
 
 # ============================================================================ data
@@ -217,11 +296,13 @@ class Pretrainer:
         self.cfg, self.vocab, self.device = cfg, vocab, device
         self.model = build_student(vocab, cfg.d_model, cfg.nhead, cfg.d_hid, cfg.nlayers, cfg.nlayers_cls,
                                    cfg.dropout, seed=cfg.seed)
-        self.init_hash = state_hash(self.model)  # identical for both objectives at the same seed
+        self.init_info = load_init_checkpoint(self.model, cfg, vocab) if cfg.init_ckpt else {"init_ckpt": None}
+        # after checkpoint loading; identical for both objectives at the same seed / init_ckpt
+        self.init_hash = state_hash(self.model)
         self.model.to(device)
         self.teacher = self.predictor = None
         if cfg.objective == "jepa":
-            self.teacher = make_teacher(self.model)
+            self.teacher = make_teacher(self.model)  # copy of the (loaded) student
             g = torch.Generator().manual_seed(cfg.seed + cfg.predictor_seed_offset)
             with torch.random.fork_rng(devices=[]):
                 torch.manual_seed(int(torch.randint(0, 2**31 - 1, (1,), generator=g)))
@@ -366,6 +447,13 @@ def run_pretraining(cfg: PretrainConfig, cache_dir: str, vocab_path: str, run_di
         if prev != cfg.matched_key():
             diff = {k: (prev[k], cfg.matched_key()[k]) for k in prev if prev[k] != cfg.matched_key()[k]}
             raise RuntimeError(f"resume config mismatch in {run_dir}: {diff}")
+        prev_cache = ck.get("cache_dir")
+        cpath = os.path.join(run_dir, "config.json")
+        if prev_cache is None and os.path.exists(cpath):  # last.pt written before cache_dir was stored
+            with open(cpath) as f:
+                prev_cache = json.load(f).get("cache_dir")
+        if prev_cache is not None and os.path.normpath(prev_cache) != os.path.normpath(cache_dir):
+            raise RuntimeError(f"resume config mismatch in {run_dir}: cache_dir {prev_cache} != {cache_dir}")
         tr.load(ck["state"])
         epoch, step0, best, best_epoch = ck["epoch"], ck["step"], ck["best_val_recon"], ck["best_epoch"]
         history, global_step = ck["history"], ck["global_step"]
@@ -373,20 +461,21 @@ def run_pretraining(cfg: PretrainConfig, cache_dir: str, vocab_path: str, run_di
         log("resumed", epoch=epoch, step=step0, global_step=global_step, best_val_recon=best)
         del ck
 
-    meta = {**asdict(cfg), "init_state_hash": tr.init_hash, "n_cells": cache.n_cells, "n_train": len(cache.train),
+    meta = {**asdict(cfg), "init_state_hash": tr.init_hash, "init_ckpt_info": tr.init_info, "n_cells": cache.n_cells, "n_train": len(cache.train),
             "n_val": len(cache.val), "n_val_used": len(vcells), "nnz": cache.nnz_stats(),
             "cache_dir": cache_dir, "cache_manifest": cache.manifest, "environment": env_info(),
             "steps_per_epoch": math.ceil(len(epoch_cells(cache, cfg, 0)) / cfg.batch_size)}
     _write(run_dir, "config.json", meta)
     _write(run_dir, "status.json", {"status": "running", "epoch": epoch, "started_unix": t_start})
-    log("start", objective=cfg.objective, init_state_hash=tr.init_hash, n_train=len(cache.train),
+    log("start", objective=cfg.objective, init_state_hash=tr.init_hash, init_ckpt=cfg.init_ckpt,
+        init_n_loaded=tr.init_info.get("n_loaded"), n_train=len(cache.train),
         steps_per_epoch=meta["steps_per_epoch"], start_epoch=epoch, start_step=step0)
     commit()
 
     def save(ep, st):
         _atomic_save({"state": tr.state(), "config": asdict(cfg), "epoch": ep, "step": st, "best_val_recon": best,
                       "best_epoch": best_epoch, "history": history, "global_step": global_step,
-                      "init_hash": tr.init_hash}, last_path)
+                      "init_hash": tr.init_hash, "cache_dir": cache_dir}, last_path)
 
     def do_val(tag):
         nonlocal best, best_epoch
@@ -480,7 +569,7 @@ def export_checkpoint(run_dir: str, export_dir: str, vocab: SimpleVocab, meta: d
         "input_style": "bins50", "input_emb_style": "continuous", "n_bins": meta["n_bins"],
         "mask_value": MASK_VALUE, "pad_value": PAD_VALUE, "cls_value": CLS_VALUE, "pad_token": "<pad>",
         "value_input_contract": ("token value = expression bin index 1..50 as float (per-cell binning of "
-                                 "nonzero counts by the kidney cache); <cls> at position 0 with value 0; "
+                                 "nonzero counts by the pretraining cache, see cache_dir); <cls> at position 0 with value 0; "
                                  "pad value -2; masked value -1. Fine-tuning must feed values on the same "
                                  "scale for the pretrained value_encoder to be in distribution."),
         "objective": meta["objective"], "epochs_completed": summary["epochs_completed"],
@@ -495,6 +584,11 @@ def export_checkpoint(run_dir: str, export_dir: str, vocab: SimpleVocab, meta: d
         "seed": meta["seed"], "init_state_hash": meta["init_state_hash"], "n_train_cells": meta["n_train"],
         "cache_dir": meta["cache_dir"], "cache_manifest_version": meta["cache_manifest"].get("census_version"),
         "deviations": meta["deviations"], "run_dir": run_dir,
+        # continued pretraining (None for random init); init_state_hash above is AFTER loading
+        "init_ckpt": meta.get("init_ckpt"),
+        "init_ckpt_dir": (meta.get("init_ckpt_info") or {}).get("init_ckpt_dir"),
+        "init_n_loaded": (meta.get("init_ckpt_info") or {}).get("n_loaded"),
+        "init_loaded_prefixes": (meta.get("init_ckpt_info") or {}).get("loaded_prefixes"),
     }
     _write(export_dir, "args.json", args)
     return {"export_dir": export_dir, "files": sorted(os.listdir(export_dir))}
@@ -505,19 +599,21 @@ def export_checkpoint(run_dir: str, export_dir: str, vocab: SimpleVocab, meta: d
 
 def run_pilot(cache_dir: str, vocab_path: str, out_path: str, objectives=OBJECTIVES, batch_sizes=(32, 256),
               steps: int = 200, warmup: int = 20, seed: int = 0, base_lr: float = 1e-4, base_bs: int = 32,
-              device: str = "cuda") -> dict:
+              device: str = "cuda", init_ckpt: str | None = None) -> dict:
     """Throughput pilot: per (objective, batch size) run warmup + ``steps`` steps on real batches
     and project wall-clock for the paper schedule (``PAPER_EPOCHS`` = 4, App. E.1) and the bs=256
     lr-scaled alternative."""
     vocab = SimpleVocab(vocab_path)
     cache = KidneyCache(cache_dir)
     rep = {"track": TRACK_LABEL, "environment": env_info(), "cache_dir": cache_dir, "n_cells": cache.n_cells,
-           "n_train": len(cache.train), "nnz": cache.nnz_stats(), "steps": steps, "warmup": warmup, "runs": {}}
+           "n_train": len(cache.train), "nnz": cache.nnz_stats(), "steps": steps, "warmup": warmup,
+           "init_ckpt": init_ckpt, "base_lr": base_lr, "runs": {}}
     hashes = {}
     for obj in objectives:
         for bs in batch_sizes:
             name = f"{obj}_bs{bs}"
-            cfg = PretrainConfig(objective=obj, seed=seed, batch_size=bs, lr=base_lr * bs / base_bs)
+            cfg = PretrainConfig(objective=obj, seed=seed, batch_size=bs, lr=base_lr * bs / base_bs,
+                                 init_ckpt=init_ckpt)
             r = {"batch_size": bs, "lr_linear_scaled": cfg.lr, "lr_sqrt_scaled": base_lr * math.sqrt(bs / base_bs)}
             tr = None
             try:
@@ -525,6 +621,8 @@ def run_pilot(cache_dir: str, vocab_path: str, out_path: str, objectives=OBJECTI
                 torch.cuda.reset_peak_memory_stats()
                 tr = Pretrainer(cfg, vocab, device)
                 hashes[name] = tr.init_hash
+                r.update({"init_state_hash": tr.init_hash, "init_n_loaded": tr.init_info.get("n_loaded"),
+                          "init_loaded_prefixes": tr.init_info.get("loaded_prefixes")})
                 cells = epoch_cells(cache, cfg, 0)
                 need = warmup + steps
                 if len(cells) < need * bs:  # small (smoke) caches: cycle through more epochs
