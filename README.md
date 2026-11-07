@@ -12,6 +12,7 @@ reproduction of Cell-JEPA (no kidney pretraining; see `outline.md` §4).
 ```text
 outline.md                 project plan / scope
 modal_app.py               Modal jobs: prepare, pilot(+_blackwell), train(+_blackwell), aggregate
+modal_reference.py         CPU job: GEARS-style metrics from saved predictions vs published Cell-JEPA numbers
 environment/image.py       two pinned images: "hopper" (torch 2.1.2/cu121 + torchtext) and
                            "blackwell" (torch 2.12.1/cu130, torchtext replaced by an import shim)
 src/data.py                download, manifest, GEARS simulation split, eval-control draw, cache
@@ -34,6 +35,7 @@ modal run modal_app.py --stage pilot           # execution + timing gate (H100)
 modal run --detach modal_app.py --stage train --epochs 15   # 2 arms x seeds 1,2, max 4 containers
 modal run modal_app.py --stage aggregate       # tables, plots, demo.html into the Volume
 modal volume get jepa-perturb experiments/adamson_trackB_v1/report ./reports   # optional, small files
+modal run modal_reference.py --exp-id adamson_trackB_v1   # adds de_rank20.json to the cache; writes reference/
 ```
 
 Useful flags: `--seeds 1,2`, `--aux-weight 0.5`, `--max-minutes 150`, `--tag v2` (runs are
@@ -47,13 +49,14 @@ Local tests: `uv run --no-project --with numpy --with pytest python -m pytest -q
 ```text
 raw/                         adamson.zip + extracted GEARS files
 checkpoints/scGPT_human/     public whole-human scGPT (args.json, best_model.pt, vocab.json)
-data/adamson_gears002_simulation_seed1/   X.npy, split.json, manifest.json, eval_controls.json, de_idx.json
+data/adamson_gears002_simulation_seed1/   X.npy, split.json, manifest.json, eval_controls.json, de_idx.json, de_rank20.json
 experiments/<exp_id>/
   experiment.json            binds the experiment to one split hash
   baselines/<name>/          metrics.json, per_intervention.csv, test_predictions.npz
   runs/<method>_s<seed>_<tag>/  config.json, manifest.json, environment.json, log.jsonl, status.json,
                              best.pt, metrics.json, per_intervention.csv, test_predictions.npz
   benchmark/<config>.json    pilot / hardware benchmark reports
+  reference/                 GEARS-style metrics (recomputed from saved predictions) vs published Cell-JEPA
   report/                    results.md, results_*.csv, per_intervention_all.csv, demo.html, *.png
 ```
 

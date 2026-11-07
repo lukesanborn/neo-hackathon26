@@ -13,7 +13,8 @@ import os
 
 import numpy as np
 
-from .evaluate import METRIC_KEYS, bootstrap_mean_ci, paired_bootstrap_diff
+from .evaluate import (GEARS_DE_MISSING_NOTE, GEARS_KEYS, METRIC_KEYS, bootstrap_mean_ci, evaluate_predictions,
+                       paired_bootstrap_diff)
 
 METHOD_ORDER = ["jepa", "scgpt", "linear", "training_mean", "no_change"]
 METHOD_LABEL = {"jepa": "scGPT + JEPA aux (ours)", "scgpt": "scGPT (matched)", "linear": "Linear (gene emb.)",
@@ -67,28 +68,36 @@ def collect_runs(exp_dir: str, split_hash: str):
     return status, chosen
 
 
-def aggregate(ds, exp_dir: str, out_dir: str) -> dict:
-    os.makedirs(out_dir, exist_ok=True)
-    ctrl = ds.control_reference()
+def load_entries(ds, exp_dir: str):
+    """(entries, run_status); entries = [(method, seed, per-intervention rows, preds dict, meta)]."""
     test = ds.split["test"]
     split_hash = ds.manifest["split_hash"]
-
-    # ---------------------------------------------------------------- load everything
     entries = []  # (method, seed, per-intervention rows, preds dict, meta)
     for bdir in sorted(glob.glob(os.path.join(exp_dir, "baselines", "*"))):
         meta = _read_json(os.path.join(bdir, "metrics.json"))
         assert meta["split_hash"] == split_hash, f"baseline {bdir} split mismatch"
         z = np.load(os.path.join(bdir, "test_predictions.npz"))
+        meta["_path"] = os.path.relpath(bdir, exp_dir)
         entries.append((meta["method"], 0, _read_rows(os.path.join(bdir, "per_intervention.csv")),
                         dict(zip(z["conditions"].tolist(), z["preds"])), meta))
     run_status, chosen = collect_runs(exp_dir, split_hash)
     for (method, seed), d in sorted(chosen.items()):
         meta = _read_json(os.path.join(d, "metrics.json"))
         z = np.load(os.path.join(d, "test_predictions.npz"))
+        meta["_path"] = os.path.relpath(d, exp_dir)
         entries.append((method, seed, _read_rows(os.path.join(d, "per_intervention.csv")),
                         dict(zip(z["conditions"].tolist(), z["preds"])), meta))
     for _, _, rows, _, _ in entries:
         assert sorted(r["condition"] for r in rows) == sorted(test), "evaluation set differs between methods"
+    return entries, run_status
+
+
+def aggregate(ds, exp_dir: str, out_dir: str) -> dict:
+    os.makedirs(out_dir, exist_ok=True)
+    ctrl = ds.control_reference()
+    test = ds.split["test"]
+    split_hash = ds.manifest["split_hash"]
+    entries, run_status = load_entries(ds, exp_dir)
 
     # ---------------------------------------------------------------- per-run table
     table = []
@@ -154,11 +163,16 @@ def aggregate(ds, exp_dir: str, out_dir: str) -> dict:
     _write_csv(os.path.join(out_dir, "per_intervention_all.csv"), long_rows)
     _write_csv(os.path.join(out_dir, "run_status.csv"), run_status)
     bench = _benchmark_table(exp_dir)
+    _, gears_summary, gears_checks = gears_tables(ds, entries)
+    gears_dataset = dataset_key(ds)
     report = {"track": "B", "split_hash": split_hash, "n_test_interventions": len(test),
               "summary": summary, "comparisons": comparisons, "claim": claim, "run_status": run_status,
               "correlation_common_set": {"n": len(common), "excluded": [c for c in test if c not in common],
                                          "note": "no_change delta Pearson is undefined (zero predicted delta)"},
-              "benchmark": bench, "manifest": {k: ds.manifest[k] for k in
+              "benchmark": bench, "gears_summary": gears_summary,
+              "gears_dataset": gears_dataset,
+              "gears_consistency_all_pass": all(c["pass"] for c in gears_checks),
+              "gears_consistency_failed": [c["path"] for c in gears_checks if not c["pass"]], "manifest": {k: ds.manifest[k] for k in
                                                ["dataset", "n_cells", "n_genes", "split_sizes", "split_seed", "h5ad_sha256"]}}
     with open(os.path.join(out_dir, "report.json"), "w") as f:
         json.dump(report, f, indent=2, default=str)
@@ -345,6 +359,13 @@ def _write_markdown(path, report, table):
             L.append(f"| {b['config']} | {b['stack']} | {b['torch']} | {b['gpu']} | {b['method']} | {b['sec_per_step']:.3f} | "
                      f"{_fmt(b.get('speedup_vs_hopper'), 2)} | {b['validation_sec']:.1f} | {b['peak_mem_gb']:.1f} | "
                      f"{b['projected_15ep_min']:.0f} | {_fmt(b.get('fingerprint_max_abs_diff_vs_hopper'), 5)} |")
+    if report.get("gears_summary"):
+        L += [""] + gears_markdown_section(report["gears_summary"], report["n_test_interventions"],
+                                           report.get("gears_dataset", "adamson"))
+        if not report.get("gears_consistency_all_pass", True):
+            L += ["", "**WARNING: GEARS consistency checks FAILED** (recomputed metrics disagree with saved "
+                  f"per_intervention.csv) for: {', '.join(report['gears_consistency_failed'])}. Treat the GEARS "
+                  "table above as unreliable."]
     L += ["", f"Correlation metrics common valid set: {report['correlation_common_set']['n']} interventions; "
           f"{report['correlation_common_set']['note']}.", "",
           "Limitations: one fixed intervention-level split; two training seeds (not independent split replicates); "
@@ -352,3 +373,209 @@ def _write_markdown(path, report, table):
           "about protein, drug response, or therapeutic benefit."]
     with open(path, "w") as f:
         f.write("\n".join(L) + "\n")
+
+
+# =============================================================================== GEARS-style vs published
+
+# Cell-JEPA (arXiv 2602.02093) Table 3 (absolute) and Table 4 (delta), extracted from the arXiv HTML.
+# Table numbering in the paper is inconsistent — please spot-check against the PDF.
+PUBLISHED = {
+    "adamson": {
+        "scGPT (paper)": {"gears_pearson": 0.905, "gears_pearson_de": 0.699, "gears_top20_de_nd": 0.677,
+                          "gears_delta_pearson": 0.173, "gears_delta_pearson_de": 0.101,
+                          "gears_delta_top20_de_nd": 0.120},
+        "Cell-JEPA (paper)": {"gears_pearson": 0.937, "gears_pearson_de": 0.741, "gears_top20_de_nd": 0.720,
+                              "gears_delta_pearson": 0.120, "gears_delta_pearson_de": -0.176,
+                              "gears_delta_top20_de_nd": -0.152},
+    },
+    "norman": {
+        "scGPT (paper)": {"gears_pearson": 0.631, "gears_pearson_de": 0.276, "gears_top20_de_nd": 0.278,
+                          "gears_delta_pearson": 0.103, "gears_delta_pearson_de": 0.105,
+                          "gears_delta_top20_de_nd": 0.169},
+        "Cell-JEPA (paper)": {"gears_pearson": 0.787, "gears_pearson_de": 0.592, "gears_top20_de_nd": 0.565,
+                              "gears_delta_pearson": 0.059, "gears_delta_pearson_de": 0.041,
+                              "gears_delta_top20_de_nd": 0.115},
+    },
+}
+PUBLISHED_SOURCE = "Cell-JEPA, arXiv 2602.02093, Tables 3 (absolute) and 4 (delta); extracted from arXiv HTML"
+GEARS_LABEL = {"gears_pearson": "pearson", "gears_pearson_de": "pearson_de", "gears_top20_de_nd": "top20_de_nd",
+               "gears_delta_pearson": "Δ pearson", "gears_delta_pearson_de": "Δ pearson_de",
+               "gears_delta_top20_de_nd": "Δ top20_de_nd"}
+GEARS_CAVEATS = [
+    "**Metric definitions.** Ours: GEARS mean-based metrics (gears/inference.py, scGPT "
+    "`compute_perturbation_metrics`) — per test perturbation, Pearson between the mean prediction and the mean of "
+    "its treated cells over all genes / top-20 DE (`rank_genes_groups_cov_all`) / top-20 non-dropout DE; Δ "
+    "variants subtract the mean of ALL control cells from both first; equal weight across test perturbations.",
+    "**Δ definition is ambiguous in the paper.** The published Δ values (e.g. Adamson Cell-JEPA Δ pearson_de "
+    "−0.176 next to absolute pearson_de 0.741) are implausibly low for mean-based Δ and were likely computed "
+    "per cell (each treated cell vs its paired control input) then averaged. Per-cell Δ needs per-cell "
+    "predictions, which our runs do not save — future work; it is not approximated here. Compare Δ rows "
+    "with caution. Even the absolute rows may not be like-for-like: mean-based absolute Pearson is dominated by "
+    "the shared baseline expression profile (the no-change baseline already scores very high), so published "
+    "values well below ours would also suggest a per-cell (or otherwise different) definition.",
+    "**Different checkpoints.** We fine-tune the public whole-human scGPT; the paper's Cell-JEPA is "
+    "kidney-pretrained, and its scGPT baseline settings are not fully specified. Track B is our JEPA "
+    "adaptation, not a Cell-JEPA reproduction.",
+    "**Different split seed.** We use the GEARS simulation split (our cache's seed); the paper does not state "
+    "its seed. All our test perturbations are unseen single genes (GEARS 'unseen_single' subset).",
+    "**Published numbers** were extracted from the arXiv HTML (table numbering inconsistent) — please "
+    "spot-check vs the PDF.",
+    "`undefined` = Pearson undefined (constant vector, e.g. the no-change baseline has zero predicted Δ); such "
+    "perturbations are excluded from the mean and coverage is shown as (n/N).",
+]
+
+
+def dataset_key(ds) -> str:
+    """'adamson' / 'norman' / ... from the cache manifest (first word of manifest['dataset'])."""
+    name = str(ds.manifest.get("dataset", "adamson")).split()[0].lower()
+    return name or "adamson"
+
+
+def _nan_eq(a, b, tol):
+    a, b = float(a), float(b)
+    if math.isnan(a) or math.isnan(b):
+        return math.isnan(a) and math.isnan(b)
+    return abs(a - b) <= tol
+
+
+_CHECK_PAIRS = {  # name -> (recomputed key, source of reference value, reference key)
+    "gears_pearson_vs_abs_pearson": ("gears_pearson", "recomputed", "abs_pearson"),
+    "gears_delta_top20_de_nd_vs_de20_delta_pearson": ("gears_delta_top20_de_nd", "recomputed", "de20_delta_pearson"),
+    "recomputed_vs_saved_abs_pearson": ("abs_pearson", "saved", "abs_pearson"),
+    "recomputed_vs_saved_de20_delta_pearson": ("de20_delta_pearson", "saved", "de20_delta_pearson"),
+    "gears_pearson_vs_saved_abs_pearson": ("gears_pearson", "saved", "abs_pearson"),
+    "gears_delta_top20_de_nd_vs_saved_de20_delta_pearson": ("gears_delta_top20_de_nd", "saved", "de20_delta_pearson"),
+}
+
+
+def gears_tables(ds, entries, tol: float = 1e-6):
+    """Recompute GEARS metrics from saved test predictions for every entry.
+
+    Returns (by_run, summary, checks). summary is seed-averaged per perturbation (mean over seeds;
+    NaN if any seed is undefined, as in `aggregate`) then equal-weight over test perturbations.
+    checks verify gears_pearson == abs_pearson, gears_delta_top20_de_nd == de20_delta_pearson and
+    that the recomputed legacy metrics reproduce the saved per_intervention.csv.
+    """
+    ctrl = ds.control_reference()
+    test = ds.split["test"]
+    by_run, per_cond, checks = [], {}, []
+    for method, seed, saved_rows, preds, meta in entries:
+        rows = evaluate_predictions(preds, ds, test, ctrl)
+        saved = {r["condition"]: r for r in saved_rows}
+        chk = {"method": method, "seed": seed, "path": meta.get("_path", "-"), "n": len(rows)}
+        ok_all = True
+        for name, (ka, src, kb) in _CHECK_PAIRS.items():
+            diffs, ok = [], True
+            for r in rows:
+                b = float(saved[r["condition"]][kb] if src == "saved" else r[kb])
+                ok &= _nan_eq(r[ka], b, tol)
+                if not (math.isnan(r[ka]) or math.isnan(b)):
+                    diffs.append(abs(r[ka] - b))
+            chk[name] = {"pass": bool(ok), "max_abs_diff": float(max(diffs)) if diffs else 0.0}
+            ok_all &= ok
+        chk["pass"] = bool(ok_all)
+        checks.append(chk)
+        rec = {"method": method, "seed": seed if method in ("jepa", "scgpt") else "-", "path": meta.get("_path", "-")}
+        for k in GEARS_KEYS:
+            v = np.array([r[k] for r in rows], float)
+            okv = ~np.isnan(v)
+            rec[k] = float(v[okv].mean()) if okv.any() else float("nan")
+            rec[f"{k}_n"] = int(okv.sum())
+        by_run.append(rec)
+        for r in rows:
+            d = per_cond.setdefault(method, {}).setdefault(r["condition"], {k: [] for k in GEARS_KEYS})
+            for k in GEARS_KEYS:
+                d[k].append(r[k])
+    methods = [m for m in METHOD_ORDER if m in per_cond] + sorted(m for m in per_cond if m not in METHOD_ORDER)
+    has_rank = bool(getattr(ds, "de_rank20", None))
+    summary = []
+    for m in methods:
+        rec = {"method": m, "label": METHOD_LABEL.get(m, m), "n_seeds": len([e for e in entries if e[0] == m]),
+               "n_interventions": len(test)}
+        for k in GEARS_KEYS:
+            v = np.array([np.mean(per_cond[m][c][k]) for c in test], float)
+            okv = ~np.isnan(v)
+            rec[k] = float(v[okv].mean()) if okv.any() else float("nan")
+            rec[f"{k}_n"] = int(okv.sum())
+        if not has_rank:
+            rec["note"] = GEARS_DE_MISSING_NOTE
+        summary.append(rec)
+    return by_run, summary, checks
+
+
+def _cell(r, k, n_total):
+    s = _fmt(r.get(k), 3)
+    n = r.get(f"{k}_n")
+    return s if n is None or n == n_total else f"{s} ({n}/{n_total})"
+
+
+def _gears_header():
+    return ["| Method | " + " | ".join(GEARS_LABEL[k] for k in GEARS_KEYS) + " |",
+            "|---" * (len(GEARS_KEYS) + 1) + "|"]
+
+
+def gears_markdown_section(summary, n_test, dataset: str = "adamson") -> list[str]:
+    L = [f"## GEARS-style metrics vs published Cell-JEPA ({dataset.capitalize()})", "",
+         f"Ours: seed-averaged, {n_test} test perturbations, equal weight; `undefined` = Pearson undefined, "
+         "coverage shown as (n/N) when not all perturbations are defined. Published: " + PUBLISHED_SOURCE + ".", ""]
+    L += _gears_header()
+    for r in summary:
+        L.append(f"| {r['label'].replace(' (ours)', '')} (ours, {r['n_seeds']} seed{'s' if r['n_seeds'] != 1 else ''}) | "
+                 + " | ".join(_cell(r, k, n_test) for k in GEARS_KEYS) + " |")
+    for name, vals in PUBLISHED.get(dataset, {}).items():
+        L.append(f"| {name} | " + " | ".join(_fmt(vals[k], 3) for k in GEARS_KEYS) + " |")
+    if any(r.get("note") for r in summary):
+        L += ["", f"Note: {GEARS_DE_MISSING_NOTE}."]
+    L += ["", "Caveats:", ""] + [f"- {c}" for c in GEARS_CAVEATS]
+    return L
+
+
+def reference_report(ds, exp_dir: str, out_dir: str, dataset: str | None = None) -> dict:
+    """GEARS metrics recomputed from saved predictions (no saved file is modified) vs published numbers."""
+    os.makedirs(out_dir, exist_ok=True)
+    dataset = dataset or dataset_key(ds)
+    entries, _ = load_entries(ds, exp_dir)
+    by_run, summary, checks = gears_tables(ds, entries)
+    n_test = len(ds.split["test"])
+    _write_csv(os.path.join(out_dir, "gears_metrics_by_run.csv"), by_run)
+    _write_csv(os.path.join(out_dir, "gears_summary.csv"), summary)
+    all_pass = all(c["pass"] for c in checks)
+    L = [f"# Ours vs published (Cell-JEPA Tables 3–4) — {os.path.basename(exp_dir.rstrip('/'))}", "",
+         f"Split hash `{ds.manifest['split_hash']}` · {n_test} test perturbations · recomputed from saved "
+         "`test_predictions.npz` (no run file modified).", ""]
+    L += gears_markdown_section(summary, n_test, dataset)
+    L += ["", "## Per run", "", "| method | seed | path | " + " | ".join(GEARS_LABEL[k] for k in GEARS_KEYS) + " |",
+          "|---|---|---" + "|---" * len(GEARS_KEYS) + "|"]
+    for r in by_run:
+        L.append(f"| {r['method']} | {r['seed']} | {r['path']} | "
+                 + " | ".join(_cell(r, k, n_test) for k in GEARS_KEYS) + " |")
+    for other, vals_by in PUBLISHED.items():
+        if other == dataset:
+            continue
+        L += ["", f"## Published {other.capitalize()} numbers (reference only; not run here)", ""] + _gears_header()
+        for name, vals in vals_by.items():
+            L.append(f"| {name} | " + " | ".join(_fmt(vals[k], 3) for k in GEARS_KEYS) + " |")
+    L += ["", "## Consistency checks (tolerance 1e-6, NaN must match NaN)", "",
+          f"All pass: **{all_pass}**. `abs_pearson` ≡ `gears_pearson` and `de20_delta_pearson` ≡ "
+          "`gears_delta_top20_de_nd` (same control reference = mean of all controls, same gene set); the "
+          "recomputed legacy metrics must also reproduce the saved per_intervention.csv.", "",
+          "| run | pass | max abs diff: gears_pearson vs saved abs_pearson | "
+          "max abs diff: gears Δ top20_de_nd vs saved de20_delta_pearson | failed checks |",
+          "|---|---|---|---|---|"]
+    for c in checks:
+        failed = [k for k in _CHECK_PAIRS if not c[k]["pass"]]
+        L.append(f"| {c['path']} | {c['pass']} | {c['gears_pearson_vs_saved_abs_pearson']['max_abs_diff']:.2e} | "
+                 f"{c['gears_delta_top20_de_nd_vs_saved_de20_delta_pearson']['max_abs_diff']:.2e} | "
+                 f"{', '.join(failed) or '-'} |")
+    L += ["", "Future work: per-cell Δ (each treated cell vs its paired control input) requires saving per-cell "
+          "predictions; not computed."]
+    with open(os.path.join(out_dir, "reference_vs_published.md"), "w") as f:
+        f.write("\n".join(L) + "\n")
+    rep = {"exp_dir": exp_dir, "split_hash": ds.manifest["split_hash"], "n_test_interventions": n_test,
+           "dataset": dataset, "has_de_rank20": bool(getattr(ds, "de_rank20", None)),
+           "summary": summary, "by_run": by_run, "consistency_checks": checks, "consistency_all_pass": all_pass,
+           "published": PUBLISHED, "published_source": PUBLISHED_SOURCE + " — please spot-check vs PDF",
+           "caveats": GEARS_CAVEATS}
+    with open(os.path.join(out_dir, "report.json"), "w") as f:
+        json.dump(rep, f, indent=2, default=str)
+    return rep
