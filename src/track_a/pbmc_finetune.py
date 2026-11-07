@@ -62,6 +62,7 @@ class FinetuneConfig:
     val_frac: float = 0.1
     split_seed: int = 42
     precision: str = "bf16"
+    eval_every: int = 0              # >0: also score clustering every N epochs (diagnostic)
     track: str = TRACK_LABEL
     deviations: list = field(default_factory=lambda: list(FINETUNE_DEVIATIONS))
 
@@ -218,6 +219,10 @@ def run_finetune(cfg: FinetuneConfig, ckpt_dir: str, data: dict, out_dir: str, d
                     for i in range(0, len(va_idx), cfg.batch_size)]
         row = {"epoch": ep, **{f"train_{k}": float(np.mean([r[k] for r in acc])) for k in acc[0]},
                **{f"val_{k}": float(np.mean([r[k] for r in vrec])) for k in vrec[0]}, "t": round(time.time() - t0, 1)}
+        if cfg.eval_every and (ep + 1) % cfg.eval_every == 0 and ep + 1 < cfg.epochs:
+            e_mid, _ = embed_cells(student, vocab, conv, indptr, indices, vals_all, list(data["gene_symbols"]),
+                                   max_genes=cfg.max_genes, device=device)
+            row.update({f"eval_{k}": v for k, v in cluster_metrics(e_mid, data["labels"]).items()})
         history.append(row)
         log(json.dumps(row))
         commit()  # make the per-epoch log visible on the volume (dashboard)

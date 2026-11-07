@@ -135,13 +135,13 @@ def _ckpt_objective(name: str) -> tuple[str, str]:
 
 
 @app.function(image=gpu_image, gpu="B300", volumes={VOL_PATH: vol}, cpu=8, memory=32768, timeout=4 * 3600)
-def finetune(name: str, seed: int = 0, overrides: dict | None = None) -> dict:
+def finetune(name: str, seed: int = 0, overrides: dict | None = None, tag: str = "") -> dict:
     from src.track_a.pbmc_finetune import FinetuneConfig, run_finetune
 
     vol.reload()
     obj, variant = _ckpt_objective(name)
     cfg = FinetuneConfig(objective=obj, jepa_variant=variant, seed=seed, **(overrides or {}))
-    run = f"{name}_{obj}FT_s{seed}"
+    run = f"{name}_{obj}FT_s{seed}" + (f"_{tag}" if tag else "")
     out = os.path.join(FT_DIR, run)
     os.makedirs(out, exist_ok=True)
     log_f = open(os.path.join(out, "log.jsonl"), "a")
@@ -152,13 +152,14 @@ def finetune(name: str, seed: int = 0, overrides: dict | None = None) -> dict:
         log_f.flush()
 
     res = run_finetune(cfg, ckpt_dir(name), _load_data(), out, "cuda", log=log, commit=vol.commit)
-    res.pop("history", None)
-    return {"run": run, **{k: res[k] for k in ("AvgBIO", "NMI", "ARI", "ASW", "best_resolution", "minutes")}}
+    curve = [(h["epoch"] + 1, round(h["eval_AvgBIO"], 4)) for h in res.pop("history", []) if "eval_AvgBIO" in h]
+    return {"run": run, **{k: res[k] for k in ("AvgBIO", "NMI", "ARI", "ASW", "best_resolution", "minutes")},
+            **({"AvgBIO_by_epoch": curve} if curve else {})}
 
 
 @app.local_entrypoint()
 def main(stage: str = "zeroshot", ckpts: str = "", max_genes: str = "1200", force: bool = False, seeds: str = "0",
-         epochs: int = 30):
+         epochs: int = 30, overrides: str = "", tag: str = ""):
     def show(x):
         print(json.dumps(x, indent=2, default=str), flush=True)
 
@@ -167,8 +168,8 @@ def main(stage: str = "zeroshot", ckpts: str = "", max_genes: str = "1200", forc
         return
     if stage == "finetune":
         assert ckpts, "--ckpts is required for finetune"
-        ov = {} if epochs == 30 else {"epochs": epochs}
-        calls = {(n, s): finetune.spawn(n, int(s), ov) for n in ckpts.split(",") for s in seeds.split(",")}
+        ov = {**({} if epochs == 30 else {"epochs": epochs}), **(json.loads(overrides) if overrides else {})}
+        calls = {(n, s): finetune.spawn(n, int(s), ov, tag) for n in ckpts.split(",") for s in seeds.split(",")}
         lines = ["| Fine-tuned from | seed | AvgBIO | NMI | ARI | ASW | min |", "|---|---|---|---|---|---|---|"]
         for (n, s), c in calls.items():
             try:
