@@ -188,6 +188,7 @@ Raw output in `diag/results/A10_seeds.txt`. Val recon per seed:
 - At the same lr and step count, JEPA's reconstruction (~22–24.5) is **slightly worse** than plain scGPT's (~20.4–21.9). The JEPA term trades a little reconstruction for its latent objective. This is expected and is not the target metric, but the write-up should note it.
 - **Xiong et al.'s fix works:** with a 4,000-step linear warmup, plain scGPT escapes 4/4 *at the paper's lr 1e-4*. Train recon at step 5k is ~21.8–22.2, similar to lr 3e-5. The 1-seed, 1k-step warmup in A6 was too short or too unlucky to show this.
 - **Implication:** a warmup at lr 1e-4 is a *more paper-faithful* fix than lowering the LR. The paper gives lr 1e-4 and says nothing about warmup. Not yet tested: JEPA with warmup at lr 1e-4.
+- **Decision (Nov 7):** use lr 3e-5 (A9) as the main Track A pretraining setting. It is simpler: already running, no code change, verified on 12 seeds. Keep "lr 1e-4 + 4k warmup" as the backup. Using it would need a `warmup_steps` option in `PretrainConfig` plus a redeploy.
 
 ---
 
