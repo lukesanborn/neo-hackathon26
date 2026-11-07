@@ -1,0 +1,451 @@
+"""Track A — Cell-JEPA reimplemented from the paper (unofficial): Census kidney corpus.
+
+Builds the kidney pretraining cache from CELLxGENE Census LTS release 2023-05-15 with
+scGPT's kidney filter (scGPT's 814k-cell kidney corpus ~ Cell-JEPA's "800K kidney cells").
+
+Cache contract (read by the pretraining unit), under OUT = /vol/trackA/kidney_census_2023-05-15/:
+
+    manifest.json            written LAST; its presence means the cache is complete
+    shards/shard_{k:03d}.npz indptr int64 (n_cells+1), gene_ids int32 (scGPT vocab ids),
+                             bins uint8 (1..50), n_cells int64 scalar
+    shards/shard_{k:03d}.json per-shard stats + npz sha256 (sidecar; written after the npz)
+    split.json               {"val_cells": [[shard, row], ...]}  1% of cells, seed 0
+    cells.npz                provenance: soma_joinid / dataset index / is_primary_data, in cache order
+    genes.json               the in-vocab Census genes kept (feature_id, feature_name, vocab_id)
+    var_vocab.npy, plan.json build internals: Census var soma_joinid -> vocab id (-1 = dropped);
+                             cell count, shard bounds and input provenance
+
+Cells are stored in ascending Census ``soma_joinid`` order, split into contiguous shards.
+
+Only numpy is imported at module level so the binning code is unit-testable without the
+Census stack; Census / tiledbsoma / scipy imports are local to the functions that need them.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+
+import numpy as np
+
+from src.data import sha256
+
+TRACK_LABEL = "Track A — Cell-JEPA reimplemented from the paper (unofficial)"
+CENSUS_VERSION = "2023-05-15"
+ORGANISM = "Homo sapiens"
+CENSUS_ORGANISM_KEY = "homo_sapiens"
+OBS_VALUE_FILTER = "tissue_general == 'kidney' and disease == 'normal' and suspension_type != 'na'"
+X_LAYER = "raw"
+N_BINS = 50
+VAL_FRACTION = 0.01
+SPLIT_SEED = 0
+DEFAULT_SHARD_SIZE = 80_000
+
+BINNING_RULE = (
+    "Per cell, over the cell's nonzero raw counts restricted to genes present in the scGPT "
+    "vocab (zeros are dropped, not stored): edges = np.quantile(v, np.linspace(0, 1, 50)) "
+    "(default 'linear' interpolation), bins = np.digitize(v, edges) (right=False), which "
+    "lies in 1..50. This is scGPT 0.2.4 Preprocessor binning (n_bins=51, bin 0 reserved for "
+    "zero) with deterministic np.digitize instead of scGPT's random tie-breaking `_digitize`. "
+    "Equivalently: 49 non-trivial edges (quantiles k/49, k=1..49) and bin = 1 + #edges <= v. "
+    "Ties map to the same bin; the cell maximum always gets bin 50, so a cell with one "
+    "nonzero gene or all-equal nonzero values gets bin 50 everywhere. Duplicate Census "
+    "features mapping to the same scGPT symbol are summed before binning. Within a cell, "
+    "tokens are sorted by ascending vocab id."
+)
+
+DUPLICATE_PRIMARY_NOTE = (
+    "Documented Census 2023-05-15 erratum: ~243,569 cells (Census-wide) are marked "
+    "is_primary_data=True in more than one dataset. Following scGPT's corpus, this cache does "
+    "NOT filter on is_primary_data; counts of True/False within this slice are recorded here, "
+    "but cross-dataset duplicates cannot be identified from obs alone."
+)
+
+
+# ============================================================================ binning (numpy)
+
+
+def bin_nonzero(values: np.ndarray, n_bins: int = N_BINS) -> np.ndarray:
+    """Quantile-bin one cell's nonzero values to integers 1..n_bins (uint8). See BINNING_RULE."""
+    v = np.asarray(values, dtype=np.float64)
+    if v.size == 0:
+        return np.zeros(0, dtype=np.uint8)
+    if not (v > 0).all():
+        raise ValueError("bin_nonzero expects strictly positive values (zeros must be dropped)")
+    edges = np.quantile(v, np.linspace(0.0, 1.0, n_bins))
+    out = np.digitize(v, edges)
+    return out.astype(np.uint8)
+
+
+def bin_csr(indptr: np.ndarray, values: np.ndarray, n_bins: int = N_BINS) -> np.ndarray:
+    """Apply bin_nonzero row-wise to a CSR value array; returns uint8 bins aligned with values."""
+    bins = np.empty(values.shape[0], dtype=np.uint8)
+    for i in range(indptr.shape[0] - 1):
+        a, b = int(indptr[i]), int(indptr[i + 1])
+        if b > a:
+            bins[a:b] = bin_nonzero(values[a:b], n_bins)
+    return bins
+
+
+def coo_to_shard(rows: np.ndarray, gene_ids: np.ndarray, values: np.ndarray, n_cells: int,
+                 n_bins: int = N_BINS) -> dict:
+    """(row, vocab gene id, raw count) triplets of in-vocab genes -> shard arrays.
+
+    Drops zeros, sums duplicate (row, gene) entries (several Census features with one scGPT
+    symbol), sorts tokens by (row, gene id) and bins each row.
+    """
+    rows = np.asarray(rows, dtype=np.int32)
+    gene_ids = np.asarray(gene_ids, dtype=np.int32)
+    values = np.asarray(values, dtype=np.float32)
+    keep = values > 0
+    if not keep.all():
+        rows, gene_ids, values = rows[keep], gene_ids[keep], values[keep]
+    del keep
+    if rows.size and (rows.min() < 0 or rows.max() >= n_cells or gene_ids.min() < 0):
+        raise ValueError("row / gene index out of range")
+    # one int64 sort key instead of lexsort over two arrays (keeps peak memory down)
+    order = np.argsort(rows.astype(np.int64) * (int(gene_ids.max(initial=0)) + 1) + gene_ids, kind="stable")
+    rows, gene_ids, values = rows[order], gene_ids[order], values[order]
+    del order
+    n_dup = 0
+    if rows.size:
+        new = np.empty(rows.size, dtype=bool)
+        new[0] = True
+        new[1:] = (rows[1:] != rows[:-1]) | (gene_ids[1:] != gene_ids[:-1])
+        n_dup = int(rows.size - new.sum())
+        if n_dup:
+            starts = np.flatnonzero(new)
+            values = np.add.reduceat(values.astype(np.float64), starts)
+            rows, gene_ids = rows[starts], gene_ids[starts]
+    counts = np.bincount(rows, minlength=n_cells)
+    indptr = np.zeros(n_cells + 1, dtype=np.int64)
+    np.cumsum(counts, out=indptr[1:])
+    bins = bin_csr(indptr, values, n_bins)
+    return {
+        "indptr": indptr,
+        "gene_ids": gene_ids.astype(np.int32),
+        "bins": bins,
+        "n_cells": np.int64(n_cells),
+        "n_duplicate_symbol_entries_summed": n_dup,
+    }
+
+
+class ShardError(ValueError):
+    pass
+
+
+def _check(cond, msg: str) -> None:
+    if not cond:
+        raise ShardError(msg)
+
+
+def validate_shard(sh: dict, vocab_size: int, n_bins: int = N_BINS) -> None:
+    """Raise ShardError unless the shard matches the cache contract (not assert: survives -O)."""
+    indptr, g, b, n = sh["indptr"], sh["gene_ids"], sh["bins"], int(sh["n_cells"])
+    _check(indptr.dtype == np.int64 and g.dtype == np.int32 and b.dtype == np.uint8, "bad dtypes")
+    _check(indptr.shape == (n + 1,) and indptr[0] == 0 and indptr[-1] == g.size == b.size, "bad indptr")
+    _check(bool((np.diff(indptr) >= 0).all()), "indptr not monotonic")
+    if g.size:
+        _check(g.min() >= 0 and g.max() < vocab_size, "gene id outside vocab")
+        _check(b.min() >= 1 and b.max() <= n_bins, "bin outside 1..n_bins")
+
+
+def make_val_split(shard_sizes: list[int], frac: float = VAL_FRACTION, seed: int = SPLIT_SEED) -> list[list[int]]:
+    """Held-out cells as sorted [shard, row] pairs; round(frac * n) cells (>= 1 if n > 0)."""
+    n = int(sum(shard_sizes))
+    if n == 0:
+        return []
+    n_val = max(1, int(round(frac * n)))
+    idx = np.sort(np.random.default_rng(seed).choice(n, size=n_val, replace=False))
+    offsets = np.concatenate([[0], np.cumsum(shard_sizes)])
+    shard = np.searchsorted(offsets, idx, side="right") - 1
+    row = idx - offsets[shard]
+    return [[int(s), int(r)] for s, r in zip(shard, row)]
+
+
+def shard_bounds(n_cells: int, shard_size: int) -> list[tuple[int, int]]:
+    return [(a, min(a + shard_size, n_cells)) for a in range(0, n_cells, shard_size)]
+
+
+def sha256_json(obj) -> str:
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def shard_path(out_dir: str, k: int) -> str:
+    return os.path.join(out_dir, "shards", f"shard_{k:03d}.npz")
+
+
+def write_npz_atomic(path: str, **arrays) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        np.savez(f, **arrays)
+    os.replace(tmp, path)
+
+
+def write_json_atomic(path: str, obj) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=1)
+    os.replace(tmp, path)
+
+
+# ============================================================================ Census access
+
+
+def package_versions() -> dict:
+    import importlib.metadata as md
+
+    out = {}
+    for p in ("cellxgene-census", "tiledbsoma", "tiledb", "numpy", "scipy", "pandas", "pyarrow", "anndata"):
+        try:
+            out[p] = md.version(p)
+        except md.PackageNotFoundError:
+            out[p] = None
+    return out
+
+
+def open_census():
+    import cellxgene_census
+
+    return cellxgene_census.open_soma(census_version=CENSUS_VERSION)
+
+
+def census_description() -> dict:
+    import cellxgene_census
+
+    try:
+        return dict(cellxgene_census.get_census_version_description(CENSUS_VERSION))
+    except Exception as e:  # informational only
+        return {"error": repr(e)}
+
+
+def plan(out_dir: str, vocab: dict[str, int], shard_size: int, max_cells: int | None) -> dict:
+    """Read obs/var, map genes to the vocab, fix cell order and shard boundaries.
+
+    Writes cells.npz, genes.json, var_vocab.npy and plan.json (last) into out_dir. Raises if
+    the filter matches no cells or no Census gene maps to the vocab.
+    """
+    os.makedirs(os.path.join(out_dir, "shards"), exist_ok=True)
+    with open_census() as census:
+        exp = census["census_data"][CENSUS_ORGANISM_KEY]
+        obs = (exp.obs.read(value_filter=OBS_VALUE_FILTER,
+                            column_names=["soma_joinid", "dataset_id", "is_primary_data"])
+               .concat().to_pandas())
+        var = (exp.ms["RNA"].var.read(column_names=["soma_joinid", "feature_id", "feature_name"])
+               .concat().to_pandas())
+        n_obs_total = int(exp.obs.count)
+    obs = obs.sort_values("soma_joinid").reset_index(drop=True)
+    n_filter = len(obs)
+    if max_cells is not None:
+        obs = obs.iloc[:max_cells]
+    if len(obs) == 0:
+        raise RuntimeError(f"obs filter matched no cells: {OBS_VALUE_FILTER!r}")
+    datasets = sorted(obs["dataset_id"].unique().tolist())
+    ds_index = {d: i for i, d in enumerate(datasets)}
+    np.savez(os.path.join(out_dir, "cells.npz"),
+             soma_joinid=obs["soma_joinid"].to_numpy(np.int64),
+             dataset_idx=obs["dataset_id"].map(ds_index).to_numpy(np.int32),
+             is_primary_data=obs["is_primary_data"].to_numpy(bool))
+
+    var = var.sort_values("soma_joinid").reset_index(drop=True)
+    n_var = int(var["soma_joinid"].max()) + 1
+    var_vocab = np.full(n_var, -1, dtype=np.int64)
+    kept = []
+    for jid, fid, name in zip(var["soma_joinid"], var["feature_id"], var["feature_name"]):
+        if name in vocab:
+            var_vocab[int(jid)] = int(vocab[name])
+            kept.append({"soma_joinid": int(jid), "feature_id": fid, "feature_name": name,
+                         "vocab_id": int(vocab[name])})
+    if not kept:
+        raise RuntimeError("no Census feature_name maps to the scGPT vocab")
+    np.save(os.path.join(out_dir, "var_vocab.npy"), var_vocab)
+    write_json_atomic(os.path.join(out_dir, "genes.json"), kept)
+    symbols_kept = sorted({g["feature_name"] for g in kept})
+    missing = sorted(set(var["feature_name"]) - set(vocab))
+
+    per_ds = obs["dataset_id"].value_counts()
+    info = {
+        "n_obs_census_homo_sapiens": n_obs_total,
+        "n_cells_matching_filter": n_filter,
+        "n_cells": len(obs),
+        "max_cells": max_cells,
+        "n_datasets": len(datasets),
+        "dataset_ids": datasets,
+        "cells_per_dataset": {d: int(per_ds[d]) for d in datasets},
+        "is_primary_data_true": int(obs["is_primary_data"].sum()),
+        "is_primary_data_false": int((~obs["is_primary_data"]).sum()),
+        "n_census_genes": int(len(var)),
+        "n_var_index": n_var,
+        "n_census_genes_in_vocab": len(kept),
+        "n_unique_symbols_in_vocab": len(symbols_kept),
+        "census_gene_vocab_coverage": len(kept) / max(1, len(var)),
+        "n_census_symbols_missing_from_vocab": len(missing),
+        "missing_symbol_examples": missing[:50],
+        "gene_list_sha256": sha256_json([[g["feature_id"], g["feature_name"], g["vocab_id"]] for g in kept]),
+        "shard_size": shard_size,
+        "provenance": plan_provenance(vocab),
+        "shards": shard_bounds(len(obs), shard_size),
+    }
+    write_json_atomic(os.path.join(out_dir, "plan.json"), info)
+    return info
+
+
+def plan_provenance(vocab: dict[str, int]) -> dict:
+    """Inputs that determine the cache contents; a reused plan must match these exactly."""
+    return {"census_version": CENSUS_VERSION, "organism": ORGANISM, "obs_value_filter": OBS_VALUE_FILTER,
+            "X_layer": X_LAYER, "n_bins": N_BINS, "vocab_sha256": sha256_json(vocab)}
+
+
+def read_shard_triplets(soma_joinids: np.ndarray, var_vocab: np.ndarray):
+    """Stream the raw X rows for the given (sorted) obs joinids; keep in-vocab nonzero entries.
+
+    Returns (row positions, vocab ids, values, stats) — rows are positions within soma_joinids.
+    """
+    import tiledbsoma as soma
+
+    joinids = np.asarray(soma_joinids, dtype=np.int64)
+    rows, genes, vals = [], [], []
+    nnz_total = 0
+    with open_census() as census:
+        exp = census["census_data"][CENSUS_ORGANISM_KEY]
+        with exp.axis_query("RNA", obs_query=soma.AxisQuery(coords=(joinids,))) as q:
+            for tbl in q.X(X_LAYER).tables():
+                r = tbl["soma_dim_0"].to_numpy()
+                c = tbl["soma_dim_1"].to_numpy()
+                v = tbl["soma_data"].to_numpy()
+                nnz_total += int(r.size)
+                g = var_vocab[c]
+                keep = (g >= 0) & (v > 0)
+                rk = r[keep]
+                pos = np.searchsorted(joinids, rk)
+                if pos.size and not (joinids[np.minimum(pos, joinids.size - 1)] == rk).all():
+                    raise RuntimeError("X returned a row outside the requested joinids")
+                rows.append(pos.astype(np.int32))
+                genes.append(g[keep].astype(np.int32))
+                vals.append(v[keep].astype(np.float32))
+    cat = lambda xs, dt: np.concatenate(xs) if xs else np.zeros(0, dt)  # noqa: E731
+    r, g, v = cat(rows, np.int32), cat(genes, np.int32), cat(vals, np.float32)
+    return r, g, v, {"nnz_all_genes": nnz_total, "nnz_in_vocab": int(r.size),
+                     "n_noninteger_values": int((v != np.round(v)).sum())}
+
+
+def build_shard(out_dir: str, k: int, vocab_size: int, force: bool = False) -> dict:
+    """Build shard k from plan.json / cells.npz; idempotent unless force."""
+    p = shard_path(out_dir, k)
+    side = p[:-4] + ".json"
+    with open(os.path.join(out_dir, "plan.json")) as f:
+        info = json.load(f)
+    a, b = info["shards"][k]
+    if not force and os.path.exists(p) and os.path.exists(side):
+        with open(side) as f:
+            st = json.load(f)
+        if st.get("n_cells") == b - a and st.get("start") == a:
+            return {**st, "skipped": True}
+    # drop the sidecar first: an npz without a sidecar is never treated as complete
+    if os.path.exists(side):
+        os.remove(side)
+    joinids = np.load(os.path.join(out_dir, "cells.npz"))["soma_joinid"][a:b]
+    var_vocab = np.load(os.path.join(out_dir, "var_vocab.npy"))
+    r, g, v, st = read_shard_triplets(joinids, var_vocab)
+    sh = coo_to_shard(r, g, v, n_cells=b - a)
+    del r, g, v
+    validate_shard(sh, vocab_size)
+    n_dup = sh.pop("n_duplicate_symbol_entries_summed")
+    write_npz_atomic(p, **sh)
+    lens = np.diff(sh["indptr"])
+    stats = {
+        "shard": k, "start": a, "stop": b, "n_cells": b - a,
+        "first_soma_joinid": int(joinids[0]), "last_soma_joinid": int(joinids[-1]),
+        "n_tokens": int(sh["gene_ids"].size), **st,
+        "n_duplicate_symbol_entries_summed": n_dup,
+        "n_empty_cells": int((lens == 0).sum()),
+        "genes_per_cell_min": int(lens.min()), "genes_per_cell_median": float(np.median(lens)),
+        "genes_per_cell_max": int(lens.max()),
+        "bin_histogram": np.bincount(sh["bins"], minlength=N_BINS + 1)[1:].tolist(),
+        "npz_sha256": sha256(p),
+    }
+    write_json_atomic(side, stats)
+    return stats
+
+
+def finalize(out_dir: str, vocab_size: int, vocab_path: str, census_desc: dict, extra: dict | None = None) -> dict:
+    """Check every shard against the plan, write split.json, then manifest.json (last)."""
+    with open(os.path.join(out_dir, "plan.json")) as f:
+        info = json.load(f)
+    shard_stats = []
+    for k, (a, b) in enumerate(info["shards"]):
+        with np.load(shard_path(out_dir, k)) as z:
+            sh = {key: z[key] for key in ("indptr", "gene_ids", "bins", "n_cells")}
+        validate_shard(sh, vocab_size)
+        with open(shard_path(out_dir, k)[:-4] + ".json") as f:
+            st = json.load(f)
+        if st["start"] != a or sha256(shard_path(out_dir, k)) != st["npz_sha256"]:
+            raise RuntimeError(f"shard {k}: sidecar does not match the npz / plan; rebuild with --force")
+        if int(sh["n_cells"]) != b - a:
+            raise RuntimeError(f"shard {k}: n_cells {int(sh['n_cells'])} != planned {b - a}")
+        shard_stats.append(st)
+    sizes = [s["n_cells"] for s in shard_stats]
+    val = make_val_split(sizes)
+    write_json_atomic(os.path.join(out_dir, "split.json"), {"val_cells": val})
+    nnz_all = sum(s["nnz_all_genes"] for s in shard_stats)
+    nnz_voc = sum(s["nnz_in_vocab"] for s in shard_stats)
+    n_tok = sum(s["n_tokens"] for s in shard_stats)
+    manifest = {
+        "track": TRACK_LABEL,
+        "source": "CELLxGENE Census (LTS)",
+        "census_version": CENSUS_VERSION,
+        "census_version_description": census_desc,
+        "organism": ORGANISM,
+        "measurement": "RNA",
+        "X_layer": X_LAYER,
+        "obs_value_filter": OBS_VALUE_FILTER,
+        "is_primary_data_filter": None,
+        "filter_rationale": "scGPT's kidney corpus filter (scGPT data/cellxgene build_soma_idx); "
+                            "Cell-JEPA reports ~800K kidney cells, matching scGPT's 814k kidney set.",
+        "package_versions": package_versions(),
+        "census_stack": os.environ.get("CENSUS_STACK"),
+        "vocab_path": vocab_path,
+        "vocab_size": vocab_size,
+        "n_cells": info["n_cells"],
+        "n_cells_matching_filter": info["n_cells_matching_filter"],
+        "max_cells": info["max_cells"],
+        "n_datasets": info["n_datasets"],
+        "dataset_ids": info["dataset_ids"],
+        "cells_per_dataset": info["cells_per_dataset"],
+        "is_primary_data_counts": {"true": info["is_primary_data_true"], "false": info["is_primary_data_false"]},
+        "duplicate_primary_note": DUPLICATE_PRIMARY_NOTE,
+        "duplicate_primary_census_wide_erratum": 243569,
+        "n_census_genes": info["n_census_genes"],
+        "n_genes_in_vocab": info["n_census_genes_in_vocab"],
+        "n_unique_symbols_in_vocab": info["n_unique_symbols_in_vocab"],
+        "census_gene_vocab_coverage": info["census_gene_vocab_coverage"],
+        "n_census_symbols_missing_from_vocab": info["n_census_symbols_missing_from_vocab"],
+        "missing_symbol_examples": info["missing_symbol_examples"],
+        "gene_mapping": "Census var feature_name (symbol) looked up verbatim in scGPT vocab.json; "
+                        "no HGNC alias map applied (genes absent from the vocab are dropped).",
+        "gene_list_sha256": info["gene_list_sha256"],
+        "nnz_all_genes": nnz_all,
+        "nnz_in_vocab": nnz_voc,
+        "nonzero_count_vocab_coverage": nnz_voc / max(1, nnz_all),
+        "n_tokens": n_tok,
+        "n_duplicate_symbol_entries_summed": sum(s["n_duplicate_symbol_entries_summed"] for s in shard_stats),
+        "n_noninteger_values": sum(s["n_noninteger_values"] for s in shard_stats),
+        "n_empty_cells": sum(s["n_empty_cells"] for s in shard_stats),
+        "mean_genes_per_cell": n_tok / max(1, info["n_cells"]),
+        "n_bins": N_BINS,
+        "binning_rule": BINNING_RULE,
+        "cell_order": "ascending Census soma_joinid; contiguous shards (see cells.npz)",
+        "shard_format": {"indptr": "int64 (n_cells+1)", "gene_ids": "int32 scGPT vocab ids",
+                         "bins": "uint8 1..50", "n_cells": "int64 scalar"},
+        "n_shards": len(shard_stats),
+        "shards": [{"file": os.path.basename(shard_path(out_dir, s["shard"])), "n_cells": s["n_cells"],
+                    "n_tokens": s["n_tokens"], "sha256": s["npz_sha256"]} for s in shard_stats],
+        "split": {"file": "split.json", "val_fraction": VAL_FRACTION, "seed": SPLIT_SEED,
+                  "n_val": len(val), "n_train": info["n_cells"] - len(val),
+                  "rule": "np.random.default_rng(0).choice(n_cells, round(0.01*n_cells), replace=False) "
+                          "over global cache order, mapped to [shard, row]; all other cells are train."},
+        **(extra or {}),
+    }
+    write_json_atomic(os.path.join(out_dir, "manifest.json"), manifest)
+    return manifest
