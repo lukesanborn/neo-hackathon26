@@ -350,6 +350,33 @@ Metrics (higher is better except mean rank):
 - **The kidney checkpoints are clearly worse than public scGPT here,** and worse than linear and even the training mean on neighbour retrieval. Within the paper's pair, JEPA is slightly ahead on 3 of 4 metrics, but the differences are tiny.
 - **Caveat:** 22 test genes × 2 seeds gives very low resolution (one gene = 0.045 top-1). There are no confidence intervals yet. Next: bootstrap over genes, and a larger screen (Norman, or Replogle K562 essential) before claiming anything.
 
+## A17. Confidence intervals for the retrieval test (Nov 7)
+
+`diag/retrieval.py` with `src/retrieval.py`. Per-gene scores, seeds averaged within each arm, paired bootstrap over the 22 test genes (2,000 resamples, seed 0, 95% percentile CIs). Full tables in `diag/results/A17_adamson_retrieval_ci.md` / `.json`. The reference set is 57 training perturbations (A16 said 58; the control is excluded).
+
+Selected per-arm means [95% CI]:
+
+| Arm | ref_spearman | id_top1 | id mean rank |
+|---|---|---|---|
+| public scGPT → Cell-JEPA FT | 0.601 [0.42, 0.76] | 0.205 [0.07, 0.34] | 8.6 [5.9, 11.5] |
+| public scGPT → scGPT+ECS FT | 0.509 [0.32, 0.68] | 0.227 [0.09, 0.39] | 9.2 [6.3, 12.1] |
+| kidney JEPA → Cell-JEPA FT | 0.386 [0.25, 0.52] | 0.136 [0.02, 0.27] | 11.2 [8.6, 13.8] |
+| kidney scGPT → scGPT FT | 0.329 [0.19, 0.47] | 0.136 [0.02, 0.27] | 11.0 [8.2, 13.8] |
+| linear | 0.559 [0.35, 0.73] | 0.091 [0.00, 0.23] | 10.0 [7.4, 12.7] |
+| training mean | 0.496 [0.30, 0.66] | 0.045 [0.00, 0.14] | 11.5 |
+
+Key paired differences, diff [95% CI] (fraction of resamples > 0):
+- public Cell-JEPA FT − linear, id_top1: +0.114 [−0.07, 0.30] (0.87); id mean rank −1.36 [−3.2, 0.4]
+- public scGPT+ECS FT − linear, id_top1: +0.136 [−0.05, 0.32] (0.90)
+- kidney JEPA arm − kidney scGPT arm (paper's comparison): unresolved on every metric
+- public Cell-JEPA FT − public scGPT+ECS FT, cluster_agreement: +0.29 [0.09, 0.44] (1.00). **The only robust JEPA-vs-scGPT difference.**
+- all 8 kidney lr 3e-5 arms − linear, ref_spearman and ref_p@5: CIs entirely below 0 (kidney checkpoints are worse than linear at ranking measured perturbations)
+
+**Conclusions:**
+- **A16's "deep beats linear at identifying genes" is a trend, not a result.** ~87–90% of resamples favour deep models, but the CIs include 0.
+- **The only CI-supported JEPA effect:** with public scGPT, the Cell-JEPA fine-tune recipe recovers the similarity structure among held-out genes better than the scGPT recipe (cluster agreement +0.29).
+- **22 genes are too few.** The CIs only cover gene resampling, not seed variance, so the true uncertainty is larger. This motivates the Replogle evaluation (Step 2).
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.

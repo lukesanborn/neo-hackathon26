@@ -72,7 +72,9 @@ The paper (arXiv 2602.02093) has three evaluations, all comparing kidney-pretrai
 
 ### Phase 3: downstream use of the embedding or predictor
 - ✅ A16 predicted-effect retrieval on saved Adamson predictions: deep models beat linear at **identifying** held-out genes (top-1 0.16–0.23 vs 0.09; chance 0.045); public scGPT + Cell-JEPA FT best at neighbour retrieval (0.60 vs 0.56). Kidney checkpoints weak here.
-- ⬜ Bootstrap CIs for A16; scale to a larger screen (Norman / Replogle K562 essential)
+- ✅ Bootstrap CIs (A17): deep>linear identification is only a trend (CI includes 0); public Cell-JEPA FT > scGPT FT on cluster agreement (+0.29, CI excludes 0)
+- 🔄 Scale to Replogle K562 essential (data unit running)
+- 🔄 Continued pretraining of public scGPT ± JEPA on 2M blood/marrow cells (data + code units running)
 - ⬜ E9: few-cell perturbation identification from frozen embeddings (top-ranked in `experiment.md`; no training)
 - ⬜ Cell-type / cell-state annotation via a linear probe on frozen embeddings (reuses the Task 2 code)
 - ⬜ In-silico perturbation ranking with the fine-tuned predictor (prioritise knockdowns against a target expression profile)
