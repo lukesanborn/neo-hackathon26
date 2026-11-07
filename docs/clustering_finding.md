@@ -107,3 +107,64 @@ on any experiment's `demo_data.json`, including `adamson_trackA_v1`.
 **The most promising lead:** the shared-component gap (94–99% predicted vs 68% measured) is a
 concrete, specific failure mode. A model that produced responses with reality's diversity would
 score far better here. That is a sharper target than "reduce RMSE."
+
+---
+
+# Addendum: precision@k — does the model pick the right perturbations to validate?
+
+Measured 2026-11-07, same Track B predictions. Reproduce with:
+
+```bash
+python scripts/precision_at_k.py reports/demo.html
+```
+
+## Why this metric
+
+Arrayed validation is robotics-bound: a lab follows up 20–100 perturbations, never thousands
+(`docs/use_case_map.md` §8). So the decision-relevant question is not how accurate each predicted
+value is, but **of the k perturbations ranked highest, how many are real hits?** Every wrong pick
+is a wasted validation well. Perturbations are ranked by predicted effect magnitude against the
+same quantity measured — *which knockdowns actually do something?*
+
+## Results (22 held-out perturbations)
+
+| Method | precision@5 (random 23%) | precision@10 (random 45%) | Spearman ρ |
+|---|---|---|---|
+| Linear (PCA baseline) | **4/5 = 80%**, p = 0.003 | 5/10 = 50%, p = 0.52 | **+0.289** |
+| scGPT + JEPA aux | 1/5 = 20%, p = 0.77 | 5/10 = 50%, p = 0.52 | +0.182 |
+| scGPT (matched) | 1/5 = 20%, p = 0.76 | 3/10 = 30%, p = 0.96 | −0.107 |
+| Training mean | **cannot rank** | **cannot rank** | undefined |
+| No change | **cannot rank** | **cannot rank** | undefined |
+
+## Two findings
+
+### 1. The baselines that beat us on RMSE cannot perform this task at all
+Training-mean (delta RMSE 0.0588, better than either fine-tuned model) and no-change predict an
+**identical profile for every perturbation**. Ranking them produces an all-tied order, which is not
+a ranking. On the metric that maps to the lab's actual decision they score nothing.
+
+This is the sharpest statement yet of the thesis: **delta RMSE rewarded methods that are useless
+for the decision the application exists to support.** Three independent lines now point the same
+way — the saturated Pearson, the clustering flip, and this.
+
+### 2. The linear baseline wins again, and significantly
+80% precision@5 at p = 0.003 is a real result — the PCA baseline puts 4 of the 5 biggest real
+movers in its top 5. Both foundation models are at or below chance there.
+
+Caveats: 22 perturbations is small; this is one of several metrics examined, so some multiple-
+comparison discount applies; and the linear model's advantage fades by k = 10 (50%, not
+significant), so it is good at the very top rather than across the whole ranking. The top is the
+regime that matters, which makes the result more useful, not less.
+
+**Untested alternative explanation:** the linear model's gene embedding may be ranking genes by
+something as simple as their own expression level or variability, in which case an even cruder
+heuristic would match it. Worth checking before crediting the model — it needs the control
+expression profile, which is not in the demo payload.
+
+## For Track A
+
+The script is model-agnostic and runs on any experiment's `demo_data.json`. Whatever checkpoint
+Vincent's fine-tuning produces can be scored on it immediately, and **a win here is worth more to
+the application story than a win on delta RMSE** — it converts directly into validation wells saved.
+
+The bar to beat is the linear baseline's 4/5, not the other foundation models.
