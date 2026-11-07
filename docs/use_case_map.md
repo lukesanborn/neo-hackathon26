@@ -91,16 +91,28 @@ A large share of this is waiting, not hands-on work. The core facility's queue i
 ### ❌ "Researchers don't know which genes to screen"
 Weak. They usually do: a pathway, a disease, a hypothesis. And when they don't, Step 2 is free.
 
-### ❌ "Screens are too expensive, so predict instead"
-**The strongest counter-argument to our own pitch, and it comes from how pooling works.**
+### ⚠️ "Screens are too expensive, so predict instead" — true for Perturb-seq, false for bulk
 
-Pooled screens scale *sub-linearly*. The library is one tube; the cells grow in one flask. Adding
-500 more genes to a screen you're already running costs more guides, more cells and more
-sequencing — but not 500× more work. The marginal cost of one more gene is small.
+**Correction (2026-11-07).** An earlier version of this document claimed pooled screens scale
+sub-linearly, so adding genes is nearly free, and concluded the cost argument was weak. **That is
+true for bulk screens and false for Perturb-seq**, which is the assay we predict.
 
-So "predict the genes you didn't screen" is weak whenever the researcher could simply have
-included them. And Replogle 2022 already screened **every expressed gene** — the brute-force
-option exists.
+| | Bulk pooled screen | Perturb-seq |
+|---|---|---|
+| Cells per perturbation | ~50 (coverage is enough) | **~100–800** (needed to average out single-cell noise) |
+| Sequenced per cell | the guide barcode only | **full transcriptome: ~20k reads + 2k for the guide** |
+| Cost of +1,000 genes | small | **~300,000 more cells, fully sequenced** |
+
+For Perturb-seq, **cost scales roughly linearly with perturbation count**, because cells and
+sequencing dominate and both scale with it. Sanity check: Replogle's 2.5M-cell genome-scale screen
+at ~$0.10–0.30/cell ⚠️ lands at $250k–750k, consistent with the $100k–$1M figure from an
+independent source.
+
+What survives of the counter-argument:
+- **Time does not scale.** 200 or 2,000 perturbations is the same 12–20 weeks. We make nobody faster.
+- **Brute force exists.** Replogle 2022 already screened every expressed gene — in their cell lines.
+- **The cost axis is eroding independently.** Compressed Perturb-seq claims 4–20× savings and
+  TAP-seq up to 50× less sequencing, with no model involved.
 
 ### ❌ "Literature review takes a year, we skip it"
 Partly true (target ID + validation runs 1–2 years), but our model doesn't read literature. The
@@ -205,9 +217,13 @@ We have evidence for none of these yet. Step 1 runs on predictions already saved
 | Literature + homology | $0 | days | prose, if it exists | nothing to read for ~80% of genes |
 | Public data mining (DepMap, co-expression, STRING) | $0 | days–weeks | correlational hypothesis | cancer lines only; not your cell type; correlational |
 | Bulk pooled screen | cheapest | 12–20 wk genome-wide<br>8–16 wk sub-library | **one number** ("does it matter?") | one-dimensional readout |
-| **Perturb-seq** | **10–25× bulk per gene**<br>$100k–$1M genome-scale | 12–20 wk | **full transcriptome** → clustering, function assignment | **~500 cells per perturbation** |
+| **Perturb-seq** | **10–25× bulk per gene**<br>$100k–$1M genome-scale<br>**scales ~linearly with perturbation count** | 12–20 wk<br>**flat in perturbation count** | **full transcriptome** → clustering, function assignment | **~100–800 cells per perturbation** |
 | Arrayed follow-up | high upfront (automation) | +4–5 wk | per-well, imaging-capable | focused gene sets only |
 | **Model prediction (ours)** | **$0 marginal** | **hours** | predicted transcriptome | **needs a screen in the same system to train on** |
+
+Note the asymmetry in the Perturb-seq row: **cost scales with how many perturbations you include;
+time does not.** That is what determines where a model can and cannot help — it can cut the bill
+or the cell requirement, but not the calendar.
 
 ### TODAY
 
@@ -230,7 +246,8 @@ We have evidence for none of these yet. Step 1 runs on predictions already saved
       │
       ├─ Perturb-seq ......... 10–25×   · 12–20 wk · FULL profile per gene
       │     └─ cluster by effect → assign function
-      │        ~500 cells/perturbation, so cell count caps the gene count
+      │        ~100–800 cells/perturbation → cost AND cell count scale
+      │        with the number of perturbations; time does not
       │
       └─ Arrayed follow-up ... high upfront · +4–5 wk · validate hits
 ```
@@ -243,7 +260,7 @@ Steps 1 and 2 are **unchanged** — still free, still first. Nothing we build di
 └─ 3. Need causal, context-specific evidence
       │
       ├─ Run Perturb-seq on the subset you can afford / have cells for
-      │        ........................ same cost and time as today
+      │        ........ SAME TIME as today, cost scales down with the subset
       │                    │
       │                    ▼
       │        ╔═══════════════════════════════════╗
@@ -264,14 +281,32 @@ Steps 1 and 2 are **unchanged** — still free, still first. Nothing we build di
            but a better-chosen shortlist
 ```
 
+### Worked example: functional data on 2,000 candidate genes
+
+Perturb-seq cost is driven by **perturbations × cells-per-perturbation × reads-per-cell**, so it
+scales roughly linearly with how many perturbations you include.
+
+| | Perturbations screened | Cells | Sequencing ⚠️ | Time | Coverage |
+|---|---|---|---|---|---|
+| **Today** | 2,000 | ~600,000 | **$60k–180k** | 12–20 wk | 2,000 measured |
+| **With model** | 200 | ~60,000 | **$6k–18k** | 12–20 wk | 200 measured + 1,800 predicted |
+| **Difference** | — | **10× fewer** | **~90% less** | **none** | — |
+
+Assumes ~300 cells per perturbation (Adamson used ~790; Replogle ~250) and ~22,000 reads per cell
+(Illumina's recommendation: 20k transcriptome + 2k guide). ⚠️ The per-cell cost ($0.10–0.30) comes
+from a weak secondary source — the *ratio* is solid, the absolute dollars need a real quote.
+
+**The time column is the honest part: it does not move.** Growing cells and waiting on a sequencing
+core is the critical path whether you run 200 perturbations or 2,000.
+
 ### What actually changes, ranked by how defensible it is
 
 | Branch | Value | Honest strength |
 |---|---|---|
-| **Cell-limited systems** | A biopsy yielding 50,000 cells supports ~100 perturbations at 500 cells each. The other 19,900 genes are unreachable **at any budget**. Prediction is the only option. | **Strongest.** A cell-count limit cannot be bought away, unlike a cost limit |
-| **Gene pairs** | ~200M combinations; no pooling strategy reaches them. Train on singles, predict pairs. | **Strong** — but we have never tested it (Adamson is single-gene only) |
-| **New contexts** | Each cell type/timepoint is a fresh 12–20 wk screen | Strong in principle; known to be hard; untested by us |
-| **Genes left out of a screen** | Predict what you didn't include | **Weakest.** Pooled screens scale sub-linearly — you could have added them for little extra |
+| **Cell-limited systems** | A biopsy yielding 50,000 cells supports ~150 perturbations at 300 cells each. The rest are unreachable **at any budget**. Prediction is the only option. | **Strongest.** A cell-count limit cannot be bought away; a cost limit can |
+| **Genes left out of a screen** | ~10× cost reduction for the same coverage (worked example above) | **Upgraded** — each skipped perturbation really does save ~300 cells of sequencing. But the cost axis is eroding anyway (compressed Perturb-seq: 4–20×) |
+| **Gene pairs** | ~200M combinations; no screen reaches them. Train on singles, predict pairs. | **Strong in principle** — never tested by us (Adamson is single-gene only) |
+| **New contexts** | Each cell type/timepoint is a fresh 12–20 wk screen | Strong in principle; known to be hard; untested |
 
 ### Assumptions this tree depends on
 
@@ -282,11 +317,25 @@ Every one is currently unproven:
 2. Predicted clustering beats free co-essentiality clustering. **Untested.**
 3. Single-gene training transfers to pairs. **Untested.**
 4. Training transfers across cell contexts. **Untested, known to be hard.**
-5. A model trained on a small screen (the cell-limited case) still works. **Untested** — our
-   models trained on 58 perturbations; a biopsy-scale screen might give far fewer.
+5. A model trained on a *small* screen still works well enough to extend to a much larger gene
+   set. **Untested, and the most load-bearing assumption here** — it underwrites both the
+   cost-reduction and the cell-limited branches. Our models trained on 58 perturbations and gave
+   only weak functional signal. Directly testable by retraining on fewer perturbations and
+   re-running `scripts/clustering_structure.py`.
 
 ### The honest headline
 
-> We do not remove a step. The screen still happens. What changes is how much you get out of the
-> one screen you could afford — and whether you can reach perturbations that no screen can.
+> We do not remove a step and we do not make anyone faster — the screen still happens, and it still
+> takes 12–20 weeks. What changes is that a fixed experimental budget covers roughly 10× more
+> perturbations, and that a cell-limited sample becomes workable at all.
+
+Three things to keep attached to that claim:
+
+1. **Time is unchanged.** Anyone promising a speed-up from this is wrong.
+2. **The cost axis is contested.** Compressed Perturb-seq (4–20×) and TAP-seq (up to 50× less
+   sequencing) cut the same bill with no model. The cell-count argument is the durable one.
+3. **It depends on training from a small screen.** Our models trained on 58 perturbations and
+   produced only weak functional signal (`docs/clustering_finding.md`). Whether a 200-perturbation
+   screen trains a model good enough to extend to 1,800 is the single most load-bearing untested
+   assumption in this document.
 
