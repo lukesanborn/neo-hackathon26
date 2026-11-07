@@ -334,3 +334,43 @@ def test_resumed_run_equals_uninterrupted(cache_dir, tmp_path, monkeypatch):
     b = P.run_pretraining(PretrainConfig(epochs=2, **base), out, vp, str(tmp_path / "b"), str(tmp_path / "eb"),
                           device="cpu")
     assert a["history"][-1]["val_recon"] == pytest.approx(b["history"][-1]["val_recon"], rel=1e-5)
+
+
+# ----------------------------------------------------------------------------- anti-collapse variants
+def test_jepa_variants_run_and_center_state(tmp_path=None):
+    torch = pytest.importorskip("torch")
+    from src.track_a.pretrain_model import JEPA_VARIANTS, variance_hinge
+
+    assert set(JEPA_VARIANTS) == {"faithful", "center", "vicreg", "token"}
+    # variance hinge: constant embeddings -> ~gamma; well-spread -> ~0
+    assert float(variance_hinge(torch.zeros(16, 8))) > 0.9
+    assert float(variance_hinge(torch.randn(256, 8) * 5)) < 0.05
+
+
+@pytest.mark.parametrize("variant", ["faithful", "center", "vicreg", "token"])
+def test_jepa_variant_forward_backward(variant):
+    torch.manual_seed(0)
+    student = TinyModel()
+    teacher = pm.make_teacher(student)
+    pred = pm.CLSPredictor(D)
+    batch, _ = _batch()
+    state = {}
+    out = pm.forward_losses("jepa", student, teacher, pred, batch, H, AMP, variant, state, update_state=True)
+    assert torch.isfinite(out["loss"]) and torch.allclose(out["loss"], 1000 * out["jepa"] + out["recon"])
+    out["loss"].backward()
+    assert all(p.grad is None for p in teacher.parameters())
+    assert any(p.grad is not None for p in pred.parameters())
+    if variant == "center":
+        assert "center" in state and state["center"].shape == (D,) and "target_spread" in out
+    else:
+        assert state == {}
+    if variant == "vicreg":
+        assert "var_loss" in out
+    if variant == "token":
+        assert "teacher_tok_std" in out
+    # faithful default reproduces the original call exactly
+    if variant == "faithful":
+        torch.manual_seed(0)
+        s2 = TinyModel(); t2 = pm.make_teacher(s2); p2 = pm.CLSPredictor(D)
+        o2 = pm.forward_losses("jepa", s2, t2, p2, batch, H, AMP)
+        assert torch.allclose(o2["loss"], out["loss"].detach())

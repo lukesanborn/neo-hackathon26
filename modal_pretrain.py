@@ -148,7 +148,8 @@ def integration_check(smoke: bool = True, objectives: str = "jepa,scgpt", tag: s
 def main(stage: str = "smoke", objectives: str = "jepa,scgpt", tag: str = "v1", smoke: bool = False,
          gpu: str = GPU, epochs: int = 4, batch_size: int = 32, lr: float = 1e-4, max_cells_per_epoch: int = 0,
          max_minutes: float = 23 * 60.0, steps: int = 200, warmup: int = 20, batch_sizes: str = "32,256",
-         seed: int = 0, ema_momentum: float = 0.996):
+         seed: int = 0, ema_momentum: float = 0.996, jepa_variant: str = "faithful",
+         variants: str = "faithful,center,vicreg,token"):
     def show(x):
         print(json.dumps(x, indent=2, default=str), flush=True)
 
@@ -178,7 +179,8 @@ def main(stage: str = "smoke", objectives: str = "jepa,scgpt", tag: str = "v1", 
     elif stage == "train":
         ov = {"epochs": epochs, "batch_size": batch_size, "lr": lr, "max_minutes": max_minutes, "seed": seed,
               "ema_momentum": ema_momentum, "max_cells_per_epoch": max_cells_per_epoch or None}
-        calls = {o: pretrain.with_options(gpu=gpu).spawn(o, smoke, tag, ov) for o in objs}
+        calls = {o: pretrain.with_options(gpu=gpu).spawn(
+            o, smoke, tag, {**ov, **({"jepa_variant": jepa_variant} if o == "jepa" else {})}) for o in objs}
         print(f"submitted pretraining: {list(calls)} overrides={ov}", flush=True)
         for o, c in calls.items():
             try:
@@ -187,6 +189,24 @@ def main(stage: str = "smoke", objectives: str = "jepa,scgpt", tag: str = "v1", 
                                             "best_epoch", "elapsed_seconds_this_call", "export")}})
             except Exception as e:
                 show({o: {"status": "failed", "error": repr(e)[:2000]}})
+
+    elif stage == "ablate":
+        # Short anti-collapse ablations on kidney data only (no Adamson data involved). Each run gets
+        # its own tag, so exports go to <obj>_kidney_abl_<variant> and never to the canonical dirs.
+        ov = {"epochs": epochs, "batch_size": batch_size, "lr": lr, "max_minutes": max_minutes, "seed": seed,
+              "ema_momentum": ema_momentum, "max_cells_per_epoch": max_cells_per_epoch or None}
+        jobs = {"scgpt": ("scgpt", {})}
+        jobs.update({f"jepa_{v}": ("jepa", {"jepa_variant": v}) for v in variants.split(",") if v})
+        calls = {name: pretrain.with_options(gpu=gpu).spawn(o, smoke, f"abl_{name}", {**ov, **extra})
+                 for name, (o, extra) in jobs.items()}
+        print(f"submitted ablations: {list(calls)} overrides={ov}", flush=True)
+        for name, c in calls.items():
+            try:
+                r = c.get()
+                show({name: {"status": r["status"], "best_val_recon": r["best_val_recon"],
+                             "history": r.get("history")}})
+            except Exception as e:
+                show({name: {"status": "failed", "error": repr(e)[:2000]}})
 
     elif stage == "export":
         for o in objs:
