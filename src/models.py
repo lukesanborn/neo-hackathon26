@@ -144,11 +144,15 @@ def state_hash(module: nn.Module) -> str:
     return h.hexdigest()[:16]
 
 
-def encode_and_decode(model, src, values, flags, pad_mask):
+def encode_and_decode(model, src, values, flags, pad_mask, dec_values=None):
     """Same computation as TransformerGenerator.forward (no binning, no zero-prob head), but
-    also returns the transformer output so the auxiliary objective can use it."""
+    also returns the transformer output so the auxiliary objective can use it.
+
+    `dec_values` (default: `values`) feeds the AffineExprDecoder's `coeff * values + bias` term.
+    With input_transform="bins50" the encoder sees binned values while the decoder's affine
+    term uses the log1p control values, so predictions stay in log1p (evaluation) space."""
     h = model._encode(src, values, flags, pad_mask)          # (B, L, d)
-    pred = model.decoder(h, values)["pred"]                   # (B, L)
+    pred = model.decoder(h, values if dec_values is None else dec_values)["pred"]   # (B, L)
     return h, pred
 
 
@@ -173,6 +177,18 @@ class LatentPredictor(nn.Module):
         return self.net(z)
 
 
+class Projector(nn.Module):
+    """Cell-JEPA fine-tuning projector on the student <cls> embedding (architecture not given in
+    the paper; declared choice: Linear-GELU-Linear, width d)."""
+
+    def __init__(self, d: int):
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, d))
+
+    def forward(self, z):
+        return self.net(z)
+
+
 def make_teacher(model: nn.Module) -> nn.Module:
     """Frozen copy of the initial (pretrained-loaded) student. Dropout disabled via eval()."""
     teacher = copy.deepcopy(model)
@@ -185,3 +201,68 @@ def make_teacher(model: nn.Module) -> nn.Module:
 def cosine_aux_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """1 - cos(pred, sg(target)), averaged over rows."""
     return (1.0 - F.cosine_similarity(pred.float(), target.detach().float(), dim=-1)).mean()
+
+
+@torch.no_grad()
+def ema_update(teacher: nn.Module, student: nn.Module, momentum: float) -> None:
+    """teacher <- m * teacher + (1 - m) * student (parameters only; teacher stays requires_grad=False)."""
+    for pt, ps in zip(teacher.parameters(), student.parameters()):
+        pt.mul_(momentum).add_(ps.detach(), alpha=1.0 - momentum)
+
+
+def scgpt_ecs_loss(cell_emb: torch.Tensor, threshold: float = 0.3) -> torch.Tensor:
+    """scGPT's unsupervised elastic cell similarity, copied from TransformerGenerator.forward
+    (ECS=True): normalise, cosine matrix, zero the diagonal, relu, mean(1 - (cos - thr)^2) over
+    the full B x B matrix (diagonal entries included, as upstream)."""
+    z = F.normalize(cell_emb.float(), p=2, dim=1)
+    cos = z @ z.t()
+    eye = torch.eye(cos.size(0), dtype=torch.bool, device=cos.device)
+    cos = F.relu(cos.masked_fill(eye, 0.0))
+    return torch.mean(1 - (cos - threshold) ** 2)
+
+
+def prepend_cls(src, values, flags, pad_mask, cls_id: int, dec_values=None):
+    """Prepend a <cls> token at position 0: gene id `cls_id`, value 0, perturbation flag 0,
+    padding mask False. Returns (src, values, flags, pad_mask, dec_values-or-None)."""
+    B = src.shape[0]
+
+    def col(like, v):
+        return torch.full((B, 1), v, dtype=like.dtype, device=like.device)
+
+    out = (torch.cat([col(src, cls_id), src], 1), torch.cat([col(values, 0), values], 1),
+           torch.cat([col(flags, 0), flags], 1), torch.cat([col(pad_mask, False), pad_mask], 1))
+    dv = None if dec_values is None else torch.cat([col(dec_values, 0), dec_values], 1)
+    return (*out, dv)
+
+
+@torch.no_grad()
+def bin_expression(x: torch.Tensor, n_bins: int = 50, chunk: int = 256) -> torch.Tensor:
+    """Per-cell quantile binning ("bins50"). For each row: nonzero values -> integer bins 1..n_bins
+    using n_bins-1 inner edges at the per-cell quantiles k/n_bins (k=1..n_bins-1, linear
+    interpolation as np.quantile) and np.digitize semantics (bin = 1 + #edges <= value); zeros stay 0.
+    Vectorised: rows are sorted, so a row's nonzeros are its last n_nz sorted entries.
+    Requires x >= 0 (log1p expression). Returns float32 (fed to scGPT's continuous value encoder)."""
+    assert x.dim() == 2
+    if x.numel() and float(x.min()) < 0:
+        raise ValueError("bin_expression expects non-negative expression")
+    out = torch.zeros(x.shape, dtype=torch.float32, device=x.device)
+    G = x.shape[1]
+    # same float64 grid as np.linspace(0, 1, n_bins + 1) (arange * step), so edges match numpy bit-exactly
+    qs = (torch.arange(n_bins + 1, dtype=torch.float64, device=x.device) * (1.0 / n_bins))[1:-1]
+    for i in range(0, x.shape[0], chunk):
+        xc = x[i:i + chunk].double()
+        nz = xc != 0
+        n = nz.sum(1, keepdim=True)                                           # (b, 1)
+        srt = torch.sort(xc, dim=1).values
+        pos = qs.unsqueeze(0) * (n - 1).clamp_min(0)                          # (b, Q) position within nonzeros
+        lo = pos.floor().long()
+        hi = pos.ceil().long()
+        frac = pos - lo
+        off = (G - n)                                                          # first nonzero in sorted row
+        vlo = torch.gather(srt, 1, (off + lo).clamp(max=G - 1))
+        vhi = torch.gather(srt, 1, (off + hi).clamp(max=G - 1))
+        diff = vhi - vlo                                                       # np.quantile's _lerp,
+        edges = torch.where(frac >= 0.5, vhi - diff * (1 - frac), vlo + diff * frac)   # bit-exact (b, Q)
+        b = 1 + (xc.unsqueeze(-1) >= edges.unsqueeze(1)).sum(-1)               # (b, G)
+        out[i:i + chunk] = torch.where(nz, b, torch.zeros_like(b)).float()
+    return out
