@@ -2,6 +2,9 @@
 
 Track B: public pretrained scGPT -> matched fine-tuning with / without our JEPA auxiliary
 objective on GEARS-processed Adamson. No foundation-model pretraining is launched here.
+Method "celljepa": Cell-JEPA's perturbation fine-tuning recipe reimplemented from the paper
+(unofficial); `ckpt` / `input_transform` select the initial checkpoint (public scGPT_human by
+default, or e.g. an absolute path to a kidney checkpoint with input_transform="bins50").
 
 All downloads, caches, checkpoints and results live in the Modal Volume `jepa-perturb`;
 nothing is synchronised back to the local machine automatically.
@@ -11,6 +14,7 @@ nothing is synchronised back to the local machine automatically.
     modal run modal_app.py --stage pilot
     modal run --detach modal_app.py --stage train --epochs 15
     modal run modal_app.py --stage aggregate
+    modal run modal_app.py --stage pilot --methods scgpt,jepa,celljepa --exp-id <smoke_exp>
     modal volume get jepa-perturb experiments/adamson_trackB_v1/report ./reports   # optional, small
 """
 
@@ -41,6 +45,15 @@ blackwell_image = build_image("blackwell")
 
 RAW = f"{VOL_PATH}/raw"
 CKPT = f"{VOL_PATH}/checkpoints/scGPT_human"
+
+
+def ckpt_dir(ckpt: str) -> str:
+    """'scGPT_human' -> /vol/checkpoints/scGPT_human; absolute paths are used as given."""
+    path = ckpt if os.path.isabs(ckpt) else f"{VOL_PATH}/checkpoints/{ckpt}"
+    for f in ("args.json", "best_model.pt", "vocab.json"):
+        if not os.path.exists(os.path.join(path, f)):
+            raise FileNotFoundError(f"checkpoint {ckpt!r}: missing {os.path.join(path, f)}")
+    return path
 
 
 def cache_dir(split_seed: int) -> str:
@@ -141,7 +154,8 @@ def gpu_function(**kw):
 # =============================================================================== pilot / benchmark
 
 
-def _pilot(exp_id: str, config_name: str, steps: int, aux_weight: float) -> dict:
+def _pilot(exp_id: str, config_name: str, steps: int, aux_weight: float, methods: str = "scgpt,jepa",
+           ckpt: str = "scGPT_human", input_transform: str = "log1p", teacher_update: str = "frozen") -> dict:
     from src.data import load_cache
     from src.train import _write, run_pilot
 
@@ -149,7 +163,9 @@ def _pilot(exp_id: str, config_name: str, steps: int, aux_weight: float) -> dict
     ds = load_cache(_exp_config(exp_id)["cache_dir"])
     out = os.path.join(exp_dir(exp_id), "benchmark")
     os.makedirs(out, exist_ok=True)
-    rep = run_pilot(ds, CKPT, steps=steps, aux_weight=aux_weight)
+    rep = run_pilot(ds, ckpt_dir(ckpt), methods=tuple(m for m in methods.split(",") if m), steps=steps,
+                    aux_weight=aux_weight, ckpt=ckpt, input_transform=input_transform,
+                    teacher_update=teacher_update)
     rep["config_name"] = config_name
     _write(out, f"{config_name}.json", rep)
     vol.commit()
@@ -158,44 +174,56 @@ def _pilot(exp_id: str, config_name: str, steps: int, aux_weight: float) -> dict
 
 @gpu_function(image=hopper_image, gpu=TRAIN_GPU, volumes={VOL_PATH: vol}, memory=65536, timeout=3600)
 def pilot(exp_id: str = DEFAULT_EXP, config_name: str = "hopper_H100", steps: int = 150,
-          aux_weight: float = 0.5) -> dict:
-    return _pilot(exp_id, config_name, steps, aux_weight)
+          aux_weight: float = 0.5, methods: str = "scgpt,jepa", ckpt: str = "scGPT_human",
+          input_transform: str = "log1p", teacher_update: str = "frozen") -> dict:
+    return _pilot(exp_id, config_name, steps, aux_weight, methods, ckpt, input_transform, teacher_update)
 
 
 @gpu_function(image=blackwell_image, gpu=BLACKWELL_GPU, volumes={VOL_PATH: vol}, memory=65536, timeout=3600)
 def pilot_blackwell(exp_id: str = DEFAULT_EXP, config_name: str = "blackwell_B300", steps: int = 150,
-                    aux_weight: float = 0.5) -> dict:
-    return _pilot(exp_id, config_name, steps, aux_weight)
+                    aux_weight: float = 0.5, methods: str = "scgpt,jepa", ckpt: str = "scGPT_human",
+                    input_transform: str = "log1p", teacher_update: str = "frozen") -> dict:
+    return _pilot(exp_id, config_name, steps, aux_weight, methods, ckpt, input_transform, teacher_update)
 
 
 # =============================================================================== train
 
 
-def _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag) -> dict:
+def _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt="scGPT_human",
+           input_transform="log1p", teacher_update="frozen", max_steps_per_epoch=0) -> dict:
     from src.data import load_cache
     from src.train import TrainConfig, run_training
 
     vol.reload()
     ds = load_cache(_exp_config(exp_id)["cache_dir"])
-    cfg = TrainConfig(method=method, seed=seed, epochs=epochs, aux_weight=aux_weight, max_minutes=max_minutes)
+    cfg = TrainConfig(method=method, seed=seed, epochs=epochs, aux_weight=aux_weight, max_minutes=max_minutes,
+                      ckpt=ckpt, input_transform=input_transform, teacher_update=teacher_update,
+                      max_steps_per_epoch=max_steps_per_epoch or None)
     run_dir = os.path.join(exp_dir(exp_id), "runs", f"{method}_s{seed}_{tag}")
     if os.path.exists(os.path.join(run_dir, "metrics.json")):
         raise FileExistsError(f"{run_dir} already completed; runs are immutable — use a new tag")
-    return json.loads(json.dumps(run_training(ds, CKPT, cfg, run_dir, commit=vol.commit), default=str))
+    return json.loads(json.dumps(run_training(ds, ckpt_dir(ckpt), cfg, run_dir, commit=vol.commit), default=str))
 
 
 @gpu_function(image=hopper_image, gpu=TRAIN_GPU, volumes={VOL_PATH: vol}, memory=65536,
               timeout=4 * 3600, max_containers=MAX_TRAIN_CONTAINERS)
 def train(exp_id: str, method: str, seed: int, epochs: int = 15, aux_weight: float = 0.5,
-          max_minutes: float = 150.0, tag: str = "v1") -> dict:
-    return _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag)
+          max_minutes: float = 150.0, tag: str = "v1", ckpt: str = "scGPT_human",
+          input_transform: str = "log1p", teacher_update: str = "frozen", max_steps_per_epoch: int = 0) -> dict:
+    """ckpt: dir name under /vol/checkpoints/ or an absolute path; input_transform: log1p | bins50;
+    max_steps_per_epoch: 0 = full epochs (smoke tests only)."""
+    return _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt, input_transform,
+                  teacher_update, max_steps_per_epoch)
 
 
 @gpu_function(image=blackwell_image, gpu=BLACKWELL_GPU, volumes={VOL_PATH: vol}, memory=65536,
               timeout=4 * 3600, max_containers=MAX_TRAIN_CONTAINERS)
 def train_blackwell(exp_id: str, method: str, seed: int, epochs: int = 15, aux_weight: float = 0.5,
-                    max_minutes: float = 150.0, tag: str = "v1") -> dict:
-    return _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag)
+                    max_minutes: float = 150.0, tag: str = "v1", ckpt: str = "scGPT_human",
+                    input_transform: str = "log1p", teacher_update: str = "frozen",
+                    max_steps_per_epoch: int = 0) -> dict:
+    return _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt, input_transform,
+                  teacher_update, max_steps_per_epoch)
 
 
 # =============================================================================== aggregate
@@ -222,7 +250,9 @@ def aggregate(exp_id: str = DEFAULT_EXP) -> dict:
 @app.local_entrypoint()
 def main(stage: str = "all", exp_id: str = DEFAULT_EXP, epochs: int = 15, aux_weight: float = 0.5,
          max_minutes: float = 150.0, seeds: str = "1,2", tag: str = "v1", stack: str = "hopper",
-         gpu: str = "", steps: int = 150, blackwell_gpus: str = "B300"):
+         gpu: str = "", steps: int = 150, blackwell_gpus: str = "B300", methods: str = "scgpt,jepa",
+         ckpt: str = "scGPT_human", input_transform: str = "log1p", teacher_update: str = "frozen",
+         max_steps_per_epoch: int = 0, config_name: str = ""):
     def show(x):
         print(json.dumps(x, indent=2, default=str))
 
@@ -248,10 +278,19 @@ def main(stage: str = "all", exp_id: str = DEFAULT_EXP, epochs: int = 15, aux_we
 
     if stage in ("pilot", "all"):
         fn = pilot if stack == "hopper" else pilot_blackwell.with_options(gpu=gpu or BLACKWELL_GPU)
-        rep = fn.remote(exp_id, f"pilot_{stack}", steps, aux_weight)
-        show({"gates": rep["gates"], "all_gates_pass": rep["all_gates_pass"],
+        if not config_name:   # never overwrite the Track-B pilot record with a differently configured pilot
+            config_name = f"pilot_{stack}"
+            if (methods, ckpt, input_transform, teacher_update) != ("scgpt,jepa", "scGPT_human", "log1p", "frozen"):
+                config_name += "_" + "_".join([methods.replace(",", "-"), os.path.basename(ckpt.rstrip("/")),
+                                               input_transform, teacher_update])
+        rep = fn.remote(exp_id, config_name, steps, aux_weight, methods, ckpt, input_transform, teacher_update)
+        show({"gates": rep["gates"], "all_gates_pass": rep["all_gates_pass"], "warnings": rep.get("warnings", []),
+              "init_hash_matched_across_arms": rep["init_hash_matched_across_arms"],
               **{m: {k: v[k] for k in ("seconds_per_step", "validation_seconds", "peak_gpu_mem_gb",
-                                       "projected_15_epoch_minutes", "teacher_diagnostics")}
+                                       "projected_15_epoch_minutes", "teacher_diagnostics", "init_state_hash",
+                                       "last_losses", "reload_max_abs_diff", "intervention_sensitivity_mean_abs",
+                                       "loss_jepa_last10_mean", "jepa_meanpred_baseline_last10_mean",
+                                       "teacher_cls_pairwise_cos_last10_mean") if k in v}
                  for m, v in rep["methods"].items()}})
         if stage == "all" and not rep["all_gates_pass"]:
             raise SystemExit("execution gate failed — fix on one GPU before launching training")
@@ -260,8 +299,9 @@ def main(stage: str = "all", exp_id: str = DEFAULT_EXP, epochs: int = 15, aux_we
         fn = train if stack == "hopper" else train_blackwell
         if gpu:
             fn = fn.with_options(gpu=gpu)
-        jobs = [(m, int(s)) for m in ("scgpt", "jepa") for s in seeds.split(",")]
-        calls = [(m, s, fn.spawn(exp_id, m, s, epochs, aux_weight, max_minutes, tag)) for m, s in jobs]
+        jobs = [(m, int(s)) for m in methods.split(",") if m for s in seeds.split(",")]
+        calls = [(m, s, fn.spawn(exp_id, m, s, epochs, aux_weight, max_minutes, tag, ckpt, input_transform,
+                                 teacher_update, max_steps_per_epoch)) for m, s in jobs]
         print(f"submitted {len(calls)} training jobs: " + ", ".join(f"{m}_s{s}" for m, s, _ in calls))
         for m, s, fc in calls:
             try:

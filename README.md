@@ -42,7 +42,16 @@ Useful flags: `--seeds 1,2`, `--aux-weight 0.5`, `--max-minutes 150`, `--tag v2`
 immutable; a new tag creates a new run directory), `--stack blackwell --gpu B300` to train on
 Blackwell. `JEPA_CPU_ONLY=1` deploys only the CPU functions (for workspaces without GPU billing).
 
+Cell-JEPA fine-tuning recipe (**reimplemented from the paper, unofficial**): `--methods celljepa`
+(or `scgpt,jepa,celljepa`), `--teacher-update frozen|ema`, `--ckpt scGPT_human|/abs/ckpt_dir`,
+`--input-transform log1p|bins50` (bins50 bins encoder inputs per cell; targets/predictions stay
+log1p). Loss = MSE + 1.0·(1 − cos(predictor(projector(student cls)), sg(teacher cls))) + 0.8·scGPT-ECS;
+the teacher encodes the paired *perturbed* cell. Deviations are listed in `src/train.py`
+(`CELLJEPA_DEVIATIONS`) and recorded in every run's config/metrics. `--max-steps-per-epoch N` is
+for smoke tests only.
+
 Local tests: `uv run --no-project --with numpy --with pytest python -m pytest -q tests`
+(+ `--with torch` to run `tests/test_celljepa_ft.py`)
 
 ## Volume layout (`jepa-perturb`)
 

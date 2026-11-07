@@ -1,4 +1,4 @@
-"""Matched fine-tuning for the two Track-B arms and the pilot / benchmark checks.
+"""Matched fine-tuning arms (Track-B scgpt / jepa, plus the Cell-JEPA FT recipe) and pilot checks.
 
 Arms (everything except the auxiliary objective is shared and seeded identically):
   * "scgpt": scGPT perturbation fine-tuning (tutorial recipe; MSE on post-perturbation
@@ -7,6 +7,29 @@ Arms (everything except the auxiliary objective is shared and seeded identically
     intervention-conditioned representation to the frozen teacher's representation shift
     (treated-population centroid minus control centroid) for that TRAINING intervention.
     Loss = MSE + aux_weight * (1 - cos). Teacher targets come only from training cells.
+  * "celljepa": Cell-JEPA's perturbation fine-tuning recipe, reimplemented from the paper
+    (arXiv 2602.02093, §2.2 / App. E.3; UNOFFICIAL — no code was released). A <cls> token is
+    prepended (cell embedding = output[:, 0]). Student input = gene token + perturbation flag +
+    paired CONTROL expression; teacher (a frozen copy of the initial student, or optionally an
+    EMA of it) input = gene token + the SAME perturbation flags + the paired ground-truth
+    PERTURBED expression, on the same sampled gene subset. Per-cell targets (not memorisable
+    centroids). Loss = MSE (genes only, <cls> excluded) + jepa_ft_weight * (1 - cos(
+    predictor(projector(student cls)), sg(teacher cls))) + ecs_weight * scGPT-ECS(student cls).
+    Weights 1.0 / 1.0 / 0.8, Adam 1e-4 x0.9/epoch, bs 64, 15 epochs, no masking (as the paper).
+    The teacher, projector and predictor are training-only: inference uses the student alone.
+    Deviations: see CELLJEPA_DEVIATIONS (recorded in config.json / metrics.json).
+
+input_transform:
+  * "log1p" (default): GEARS log-normalised expression everywhere (Track B behaviour).
+  * "bins50": for checkpoints pretrained on per-cell binned values (kidney checkpoints). The
+    ENCODER input (student control values and, for celljepa, teacher perturbed values) is the
+    per-cell 50-bin quantile transform of the full cell vector (models.bin_expression; computed
+    once over all genes, before gene sub-sampling, like scGPT preprocessing). Recon targets, the
+    decoder's affine `coeff * values + bias` term and therefore predictions stay in log1p space.
+    Justification: per-cell bins are not invertible (the bin->value map differs per cell and
+    depends on the unseen perturbed cell), so predicting bins would need an ad-hoc inverse; the
+    expression decoder is newly initialised anyway, and keeping targets in log1p leaves the
+    evaluation protocol and metrics directly comparable with every other arm.
 
 Deviations from the upstream tutorial (applied to BOTH arms, recorded in config.json):
   * bf16 autocast instead of fp16 + GradScaler.
@@ -32,10 +55,25 @@ import torch.nn.functional as F
 
 from .data import CTRL, Dataset
 from .evaluate import evaluate_predictions, summarize
-from .models import (LatentPredictor, build_scgpt, cosine_aux_loss, encode_and_decode,
-                     gene_vocab_ids, make_teacher, pool, state_hash)
+from .models import (LatentPredictor, Projector, bin_expression, build_scgpt, cosine_aux_loss,
+                     ema_update, encode_and_decode, gene_vocab_ids, make_teacher, pool,
+                     prepend_cls, scgpt_ecs_loss, state_hash)
 
-METHODS = ("scgpt", "jepa")
+METHODS = ("scgpt", "jepa", "celljepa")
+INPUT_TRANSFORMS = ("log1p", "bins50")
+TEACHER_UPDATES = ("frozen", "ema")
+DEFAULT_CKPT = "scGPT_human"
+CELLJEPA_LABEL = "Cell-JEPA perturbation fine-tuning reimplemented from the paper (unofficial)"
+CELLJEPA_DEVIATIONS = [
+    "ECS: scGPT's unsupervised ECS (TransformerGenerator ECS=True, threshold 0.3) on student <cls> "
+    "embeddings instead of the paper's supervised-contrastive ECS (Adamson has no cell-type positives)",
+    "control<->perturbed pairing unspecified in the paper: fixed per-seed random pairing (Trainer.pair); "
+    "for ctrl->ctrl examples the teacher target is the paired control cell",
+    "projector (Linear-GELU-Linear) and predictor (LayerNorm-MLP) architectures unspecified in the paper; "
+    "randomly initialised from a separate RNG stream",
+    "<cls> token prepended (value 0, pert flag 0); reconstruction loss and predictions exclude it",
+    "teacher = frozen copy of the initial student (App. E.3) by default; EMA (§2.2) optional",
+]
 
 
 @dataclass
@@ -52,6 +90,16 @@ class TrainConfig:
     grad_clip: float = 1.0
     dropout: float = 0.0
     precision: str = "bf16"
+    # checkpoint / input (shared by all methods; defaults reproduce Track B)
+    ckpt: str = DEFAULT_CKPT            # dir name under /vol/checkpoints/ or absolute path
+    input_transform: str = "log1p"      # "log1p" | "bins50" (see module docstring)
+    # Cell-JEPA FT recipe (method "celljepa" only)
+    teacher_update: str = "frozen"      # "frozen" | "ema"
+    ema_momentum: float = 0.996
+    jepa_ft_weight: float = 1.0
+    ecs_weight: float = 0.8
+    ecs_threshold: float = 0.3
+    n_bins: int = 50
     # JEPA adaptation (ignored by "scgpt")
     aux_weight: float = 0.5
     teacher_cells_per_condition: int = 128
@@ -70,8 +118,27 @@ class TrainConfig:
         "public whole-human scGPT checkpoint (not Cell-JEPA kidney pretraining)",
     ])
 
+    @property
+    def default_ckpt(self) -> bool:
+        """True for the public scGPT_human checkpoint, by name or by its Volume path."""
+        return self.ckpt.rstrip("/") in (DEFAULT_CKPT, f"/vol/checkpoints/{DEFAULT_CKPT}")
+
     def __post_init__(self):
         assert self.method in METHODS, self.method
+        assert self.input_transform in INPUT_TRANSFORMS, self.input_transform
+        assert self.teacher_update in TEACHER_UPDATES, self.teacher_update
+        # extra deviations only for non-default settings, so default configs match Track B exactly
+        dev = list(self.deviations)
+        pub = "public whole-human scGPT checkpoint (not Cell-JEPA kidney pretraining)"
+        if not self.default_ckpt and pub in dev:
+            dev[dev.index(pub)] = f"initial checkpoint {self.ckpt!r} (our pretraining, not the authors' checkpoint)"
+        bins = (f"encoder inputs binned per cell ({self.n_bins} quantile bins over all genes, before "
+                "gene sub-sampling); recon targets, decoder affine term and predictions stay in log1p")
+        if self.input_transform == "bins50" and bins not in dev:
+            dev.append(bins)
+        if self.method == "celljepa":
+            dev += [d for d in CELLJEPA_DEVIATIONS if d not in dev]
+        self.deviations = dev
 
 
 def env_info() -> dict:
@@ -103,6 +170,11 @@ class Trainer:
     def __init__(self, ds: Dataset, ckpt_dir: str, cfg: TrainConfig, device: str = "cuda", log=print):
         self.ds, self.cfg, self.device, self.log = ds, cfg, device, log
         self.model, self.vocab, self.ckpt_args, self.load_info = build_scgpt(ckpt_dir, cfg.seed, cfg.dropout)
+        ck_style = self.ckpt_args.get("input_style")
+        if ck_style is not None:
+            self.load_info["ckpt_input_style"] = ck_style
+            if not cfg.default_ckpt and ("bin" in str(ck_style)) != (cfg.input_transform == "bins50"):
+                log(f"[warn] checkpoint input_style={ck_style!r} but input_transform={cfg.input_transform!r}")
         self.init_hash = state_hash(self.model)  # must match across arms for the same seed
         self.ckpt_dir = ckpt_dir
         self.model.to(device)
@@ -116,6 +188,10 @@ class Trainer:
         self.gene_ids = torch.as_tensor(gids, device=device)
         self.n_genes = ds.n_genes
         self.X = torch.as_tensor(np.asarray(ds.X), device=device)  # ~1.4 GB float32 on GPU
+        # encoder-input expression: log1p (same tensor) or per-cell bins (precomputed once, all genes)
+        self.X_in = self.X if cfg.input_transform == "log1p" else bin_expression(self.X, cfg.n_bins)
+        self.use_cls = cfg.method == "celljepa"
+        self.cls_id = self.vocab["<cls>"]
         self.amp = dict(device_type="cuda", dtype=torch.bfloat16, enabled=cfg.precision == "bf16")
 
         # ---- training examples (train split only; includes ctrl -> ctrl like GEARS) ----
@@ -136,9 +212,22 @@ class Trainer:
             self.steps_per_epoch = min(self.steps_per_epoch, cfg.max_steps_per_epoch)
 
         self.predictor = None
+        self.projector = None
         self.teacher = None
         self.teacher_diag = None
-        if cfg.method == "jepa":
+        if cfg.method == "celljepa":
+            self.teacher = make_teacher(self.model)   # copy of the initial student (stays on device)
+            self.teacher_init_hash = state_hash(self.teacher)
+            g = torch.Generator().manual_seed(cfg.seed + cfg.predictor_seed_offset)
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(int(torch.randint(0, 2**31 - 1, (1,), generator=g)))
+                self.projector = Projector(self.d).to(device)
+                self.predictor = LatentPredictor(self.d).to(device)
+            self.teacher_diag = {"teacher_update": cfg.teacher_update,
+                                 "ema_momentum": cfg.ema_momentum if cfg.teacher_update == "ema" else None,
+                                 "teacher_init_hash": self.teacher_init_hash,
+                                 "teacher_requires_grad": any(p.requires_grad for p in self.teacher.parameters())}
+        elif cfg.method == "jepa":
             self.teacher = make_teacher(self.model)
             self.targets, self.teacher_diag = self._teacher_targets()
             g = torch.Generator().manual_seed(cfg.seed + cfg.predictor_seed_offset)
@@ -148,11 +237,14 @@ class Trainer:
             # the teacher is only needed to build targets; free it afterwards
             self.teacher.cpu()
 
-        params = list(self.model.parameters()) + (list(self.predictor.parameters()) if self.predictor else [])
-        self.opt = torch.optim.Adam(params, lr=cfg.lr)
+        self.opt = torch.optim.Adam(self.trainable_params(), lr=cfg.lr)
         self.sched = torch.optim.lr_scheduler.StepLR(self.opt, step_size=1, gamma=cfg.lr_step_gamma)
         self.gen = torch.Generator(device=device).manual_seed(cfg.seed)
         self.np_rng = np.random.default_rng(cfg.seed + 1)
+
+    def trainable_params(self) -> list:
+        heads = [m for m in (self.predictor, self.projector) if m is not None]
+        return list(self.model.parameters()) + [p for m in heads for p in m.parameters()]
 
     # ------------------------------------------------------------------ teacher
     @torch.no_grad()
@@ -160,7 +252,7 @@ class Trainer:
         out = []
         src_all = self.gene_ids.unsqueeze(0)
         for i in range(0, len(cells), bs):
-            vals = self.X[torch.as_tensor(cells[i:i + bs], device=self.device)]
+            vals = self.X_in[torch.as_tensor(cells[i:i + bs], device=self.device)]
             B = vals.shape[0]
             src = src_all.expand(B, -1)
             flags = torch.zeros(B, self.n_genes, dtype=torch.long, device=self.device)
@@ -219,8 +311,10 @@ class Trainer:
     def _batch(self, b: np.ndarray):
         cfg, dev = self.cfg, self.device
         B = len(b)
-        x = self.X[torch.as_tensor(self.pair[b], device=dev)]
-        y = self.X[torch.as_tensor(self.train_cells[b], device=dev)]
+        pair_t = torch.as_tensor(self.pair[b], device=dev)
+        cell_t = torch.as_tensor(self.train_cells[b], device=dev)
+        x = self.X_in[pair_t]
+        y = self.X[cell_t]
         gpos = torch.as_tensor(self.train_gpos[b], device=dev)
         has = gpos >= 0
         forced = torch.unique(gpos[has])
@@ -239,15 +333,25 @@ class Trainer:
         assert int(flags.sum()) == int(has.sum()), "perturbation flag lost by gene sub-sampling"
         src = self.gene_ids[sel].unsqueeze(0).expand(B, -1)
         mask = torch.zeros(B, len(sel), dtype=torch.bool, device=dev)
-        return src, x[:, sel], flags, mask, y[:, sel]
+        y_sel = y[:, sel]
+        binned = self.X_in is not self.X
+        extra = {
+            # decoder affine term in log1p space (None: same tensor as the encoder input)
+            "dec_vals": self.X[pair_t[:, None], sel] if binned else None,
+            # Cell-JEPA teacher input: the paired PERTURBED cell, same genes (encoder space)
+            "teacher_vals": (self.X_in[cell_t[:, None], sel] if binned else y_sel) if self.use_cls else None,
+        }
+        return src, x[:, sel], flags, mask, y_sel, extra
 
     def train_step(self, b: np.ndarray) -> dict:
+        if self.cfg.method == "celljepa":
+            return self._train_step_celljepa(b)
         self.model.train()
         if self.predictor is not None:
             self.predictor.train()
-        src, vals, flags, mask, target = self._batch(b)
+        src, vals, flags, mask, target, ex = self._batch(b)
         with torch.autocast(**self.amp):
-            h, pred = encode_and_decode(self.model, src, vals, flags, mask)
+            h, pred = encode_and_decode(self.model, src, vals, flags, mask, ex["dec_vals"])
         loss_mse = F.mse_loss(pred.float(), target)
         out = {"loss_mse": float(loss_mse)}
         loss = loss_mse
@@ -263,10 +367,45 @@ class Trainer:
             raise FloatingPointError(f"non-finite loss {out}")
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            list(self.model.parameters()) + (list(self.predictor.parameters()) if self.predictor else []),
-            self.cfg.grad_clip)
+        torch.nn.utils.clip_grad_norm_(self.trainable_params(), self.cfg.grad_clip)
         self.opt.step()
+        out["loss"] = float(loss)
+        return out
+
+    def _train_step_celljepa(self, b: np.ndarray) -> dict:
+        cfg = self.cfg
+        self.model.train()
+        self.projector.train()
+        self.predictor.train()
+        self.teacher.eval()
+        src, vals, flags, mask, target, ex = self._batch(b)
+        s_src, s_vals, s_flags, s_mask, s_dec = prepend_cls(src, vals, flags, mask, self.cls_id, ex["dec_vals"])
+        t_vals = prepend_cls(src, ex["teacher_vals"], flags, mask, self.cls_id)[1]
+        with torch.autocast(**self.amp):
+            h, pred = encode_and_decode(self.model, s_src, s_vals, s_flags, s_mask, s_dec)
+            with torch.no_grad():
+                t_cls = self.teacher._encode(s_src, t_vals, s_flags, s_mask)[:, 0]
+        loss_mse = F.mse_loss(pred[:, 1:].float(), target)
+        s_cls = h[:, 0].float()
+        z = self.predictor(self.projector(s_cls))
+        loss_jepa = cosine_aux_loss(z, t_cls.float())
+        loss_ecs = scgpt_ecs_loss(s_cls, cfg.ecs_threshold)
+        loss = loss_mse + cfg.jepa_ft_weight * loss_jepa + cfg.ecs_weight * loss_ecs
+        out = {"loss_mse": float(loss_mse), "loss_jepa": float(loss_jepa), "loss_ecs": float(loss_ecs)}
+        with torch.no_grad():   # diagnostics: how much per-cell signal the teacher targets carry
+            t = F.normalize(t_cls.float(), dim=-1)
+            # JEPA loss of a trivial predictor that always outputs the batch-mean target
+            out["jepa_meanpred_baseline"] = float(cosine_aux_loss(t.mean(0, keepdim=True).expand_as(t), t))
+            off = ~torch.eye(len(t), dtype=torch.bool, device=t.device)
+            out["teacher_cls_pairwise_cos"] = float((t @ t.T)[off].mean()) if len(t) > 1 else float("nan")
+        if not torch.isfinite(loss):
+            raise FloatingPointError(f"non-finite loss {out}")
+        self.opt.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.trainable_params(), cfg.grad_clip)
+        self.opt.step()
+        if cfg.teacher_update == "ema":
+            ema_update(self.teacher, self.model, cfg.ema_momentum)
         out["loss"] = float(loss)
         return out
 
@@ -286,13 +425,20 @@ class Trainer:
             gpos = (gene_override or {}).get(c, self.ds.gene_pos(c))
             acc = torch.zeros(self.n_genes, dtype=torch.float64, device=self.device)
             for i in range(0, len(ctrl), bs):
-                vals = self.X[torch.as_tensor(ctrl[i:i + bs], device=self.device)]
+                idx = torch.as_tensor(ctrl[i:i + bs], device=self.device)
+                vals = self.X_in[idx]
+                dec = None if self.X_in is self.X else self.X[idx]
                 B = vals.shape[0]
                 flags = torch.zeros(B, self.n_genes, dtype=torch.long, device=self.device)
                 flags[:, gpos] = 1
                 mask = torch.zeros(B, self.n_genes, dtype=torch.bool, device=self.device)
+                src = src_all.expand(B, -1)
+                if self.use_cls:   # celljepa: <cls> at position 0, dropped from the output
+                    src, vals, flags, mask, dec = prepend_cls(src, vals, flags, mask, self.cls_id, dec)
                 with torch.autocast(**self.amp):
-                    _, p = encode_and_decode(model, src_all.expand(B, -1), vals, flags, mask)
+                    _, p = encode_and_decode(model, src, vals, flags, mask, dec)
+                if self.use_cls:
+                    p = p[:, 1:]
                 acc += p.double().sum(0)
             preds[c] = (acc / len(ctrl)).float().cpu().numpy()
         return preds
@@ -307,6 +453,7 @@ class Trainer:
     def save(self, path: str, extra: dict):
         torch.save({"model": self.model.state_dict(),
                     "predictor": self.predictor.state_dict() if self.predictor else None,
+                    **({"projector": self.projector.state_dict()} if self.projector else {}),
                     "config": asdict(self.cfg), **extra}, path)
 
     def fresh_model_from(self, path: str):
@@ -320,6 +467,7 @@ class Trainer:
 
 
 def run_training(ds: Dataset, ckpt_dir: str, cfg: TrainConfig, run_dir: str, commit=lambda: None) -> dict:
+    """`ckpt_dir` is the resolved directory of `cfg.ckpt` (args.json / best_model.pt / vocab.json)."""
     os.makedirs(run_dir, exist_ok=True)
     log_f = open(os.path.join(run_dir, "log.jsonl"), "a")
 
@@ -334,7 +482,7 @@ def run_training(ds: Dataset, ckpt_dir: str, cfg: TrainConfig, run_dir: str, com
     status = "running"
     _write(run_dir, "status.json", {"status": status, "started_unix": t_start})
     tr = Trainer(ds, ckpt_dir, cfg, log=lambda m: log(m))
-    _write(run_dir, "config.json", {**asdict(cfg), "init_state_hash": tr.init_hash,
+    _write(run_dir, "config.json", {**asdict(cfg), "ckpt_dir": ckpt_dir, "init_state_hash": tr.init_hash,
                                     "pretrained_load": tr.load_info, "vocab_mapping": tr.vocab_info,
                                     "steps_per_epoch": tr.steps_per_epoch,
                                     "teacher_diagnostics": tr.teacher_diag})
@@ -398,7 +546,8 @@ def run_training(ds: Dataset, ckpt_dir: str, cfg: TrainConfig, run_dir: str, com
         status = "completed"
     metrics = {
         "method": cfg.method, "track": cfg.track, "seed": cfg.seed,
-        "checkpoint": "public scGPT_human -> fine-tuned; selected epoch %d" % best[1],
+        "checkpoint": ("public scGPT_human" if cfg.default_ckpt else cfg.ckpt)
+                      + " -> fine-tuned; selected epoch %d" % best[1],
         "split_hash": ds.manifest["split_hash"], "manifest_sha": ds.manifest["h5ad_sha256"],
         "epochs_completed": epochs_done, "selected_epoch": best[1], "val_delta_rmse_selected": best[0],
         "test": test_sum, "elapsed_seconds": time.time() - t_start,
@@ -408,6 +557,12 @@ def run_training(ds: Dataset, ckpt_dir: str, cfg: TrainConfig, run_dir: str, com
         "status": status, "deviations": cfg.deviations, "environment": env_info(),
         "init_state_hash": tr.init_hash,
     }
+    if cfg.method == "celljepa":
+        metrics["label"] = CELLJEPA_LABEL
+        metrics["teacher_state_hash_end"] = state_hash(tr.teacher)
+        metrics["teacher_diagnostics"] = tr.teacher_diag
+    if not cfg.default_ckpt or cfg.input_transform != "log1p":
+        metrics["ckpt"], metrics["input_transform"] = cfg.ckpt, cfg.input_transform
     _write(run_dir, "metrics.json", metrics)
     _write_rows(os.path.join(run_dir, "per_intervention.csv"), test_rows)
     np.savez_compressed(os.path.join(run_dir, "test_predictions.npz"),
@@ -423,16 +578,20 @@ def run_training(ds: Dataset, ckpt_dir: str, cfg: TrainConfig, run_dir: str, com
 # ============================================================================ pilot / benchmark
 
 
-def run_pilot(ds: Dataset, ckpt_dir: str, methods=METHODS, steps: int = 150, warmup: int = 20,
-              seed: int = 1, aux_weight: float = 0.5, out_dir: str | None = None) -> dict:
+def run_pilot(ds: Dataset, ckpt_dir: str, methods=("scgpt", "jepa"), steps: int = 150, warmup: int = 20,
+              seed: int = 1, aux_weight: float = 0.5, out_dir: str | None = None,
+              ckpt: str = DEFAULT_CKPT, input_transform: str = "log1p", teacher_update: str = "frozen") -> dict:
     """Execution + timing gate on one GPU. Also emits a numerical fingerprint used to compare
-    software stacks / GPUs (prediction from the untrained, pretrained-loaded model)."""
-    report = {"environment": env_info(), "methods": {}}
+    software stacks / GPUs (prediction from the untrained, pretrained-loaded model).
+    `ckpt_dir` is the resolved directory of `ckpt` (the name is only recorded)."""
+    report = {"environment": env_info(), "methods": {}, "ckpt": ckpt, "ckpt_dir": ckpt_dir,
+              "input_transform": input_transform}
     hashes = {}
     for method in methods:
         torch.cuda.reset_peak_memory_stats()
         t0 = time.time()
-        cfg = TrainConfig(method=method, seed=seed, aux_weight=aux_weight)
+        cfg = TrainConfig(method=method, seed=seed, aux_weight=aux_weight, ckpt=ckpt,
+                          input_transform=input_transform, teacher_update=teacher_update)
         tr = Trainer(ds, ckpt_dir, cfg)
         setup_s = time.time() - t0
         hashes[method] = tr.init_hash
@@ -471,6 +630,19 @@ def run_pilot(ds: Dataset, ckpt_dir: str, methods=METHODS, steps: int = 150, war
         if tr.teacher is not None:
             r["teacher_has_grads"] = any(p.grad is not None for p in tr.teacher.parameters())
             r["teacher_requires_grad"] = any(p.requires_grad for p in tr.teacher.parameters())
+        if method == "celljepa":
+            r["teacher_state_hash_end"] = state_hash(tr.teacher)
+            r["teacher_unchanged"] = r["teacher_state_hash_end"] == tr.teacher_init_hash
+            r["teacher_update"] = cfg.teacher_update
+            # collapse check on the last 10 steps (per-cell targets should not be memorisable)
+            r["loss_jepa_last10_mean"] = float(np.mean([l["loss_jepa"] for l in losses[-10:]]))
+            r["loss_jepa_min"] = float(min(l["loss_jepa"] for l in losses))
+            # reference: JEPA loss of always predicting the batch-mean teacher target. A loss near this
+            # value means the student only learned the shared direction, not per-cell information.
+            r["jepa_meanpred_baseline_last10_mean"] = float(np.mean([l["jepa_meanpred_baseline"] for l in losses[-10:]]))
+            r["teacher_cls_pairwise_cos_last10_mean"] = float(np.mean([l["teacher_cls_pairwise_cos"] for l in losses[-10:]]))
+            r["loss_components_finite"] = all(math.isfinite(l[k]) for l in losses
+                                              for k in ("loss_mse", "loss_jepa", "loss_ecs"))
 
         path = os.path.join(out_dir or "/tmp", f"pilot_{method}.pt")
         tr.save(path, {"epoch": -1})
@@ -504,6 +676,20 @@ def run_pilot(ds: Dataset, ckpt_dir: str, methods=METHODS, steps: int = 150, war
         j = report["methods"]["jepa"]
         gates["teacher_frozen"] = not j.get("teacher_has_grads", True) and not j.get("teacher_requires_grad", True)
         gates["teacher_targets_vary"] = j["teacher_diagnostics"]["shift_mean_pairwise_cos"] < 0.95
+    if "celljepa" in report["methods"]:
+        c = report["methods"]["celljepa"]
+        no_grad = not c["teacher_has_grads"] and not c["teacher_requires_grad"]
+        # never receives gradients; frozen: weights bit-identical after the pilot steps; ema: weights moved
+        gates["celljepa_teacher_frozen"] = no_grad and (c["teacher_unchanged"] == (c["teacher_update"] == "frozen"))
+        gates["celljepa_loss_components_finite"] = c["loss_components_finite"]
+        gates["celljepa_jepa_not_collapsed"] = c["loss_jepa_last10_mean"] >= 1e-3
+        # informative, not a gate: near-identical teacher <cls> targets make the JEPA term carry little
+        # per-cell signal even when its loss is "not collapsed" (observed with public scGPT_human)
+        if c["jepa_meanpred_baseline_last10_mean"] < 1e-3:
+            report.setdefault("warnings", []).append(
+                f"celljepa: teacher <cls> targets nearly identical across cells (pairwise cos "
+                f"{c['teacher_cls_pairwise_cos_last10_mean']:.4f}); a constant batch-mean predictor scores "
+                f"{c['jepa_meanpred_baseline_last10_mean']:.2e} vs student {c['loss_jepa_last10_mean']:.2e}")
     report["gates"] = gates
     report["all_gates_pass"] = all(gates.values())
     return report
