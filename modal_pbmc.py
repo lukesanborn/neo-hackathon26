@@ -5,6 +5,11 @@ Task 2 (paper Table 2): zero-shot cell-type clustering of frozen <cls> embedding
     modal run modal_pbmc.py --stage prepare                 # CPU: scvi-tools PBMC-10K -> /vol/data/pbmc10k
     modal run modal_pbmc.py --stage zeroshot                # every checkpoint + PCA baseline, in parallel
     modal run modal_pbmc.py --stage zeroshot --ckpts scGPT_human,jepa_kidney_v1_token --max-genes 1200
+    modal run modal_pbmc.py --stage finetune --ckpts jepa_kidney_lr3e5,scgpt_kidney_lr3e5 --seeds 0
+
+Task 1 (paper Table 1): fine-tune each checkpoint with its own objective (JEPA checkpoint -> Cell-JEPA
+FT incl. the JEPA term and the checkpoint's JEPA variant; scGPT checkpoint -> GEP + GEPC + ECS), then
+score clustering of the fine-tuned embeddings. Results: /vol/experiments/pbmc_finetune_v1/<run>/.
 
 Checkpoint names: "scGPT_human" (public, /vol/checkpoints) or a directory under
 /vol/trackA/checkpoints. Results: /vol/experiments/pbmc_zeroshot_v1/<name>_mg<max_genes>.json
@@ -24,6 +29,9 @@ APP_NAME = "jepa-pbmc"
 VOL_PATH = "/vol"
 DATA_DIR = f"{VOL_PATH}/data/pbmc10k"
 OUT_DIR = f"{VOL_PATH}/experiments/pbmc_zeroshot_v1"
+FT_DIR = f"{VOL_PATH}/experiments/pbmc_finetune_v1"
+PAPER_TABLE1 = {"scGPT (paper)": {"AvgBIO": 0.7531, "NMI": 0.7652, "ASW": 0.7100, "ARI": 0.7842},
+                "Cell-JEPA (paper)": {"AvgBIO": 0.7830, "NMI": 0.7761, "ASW": 0.7256, "ARI": 0.8472}}
 PAPER_TABLE2 = {"scGPT (paper)": {"AvgBIO": 0.5288, "NMI": 0.5585, "ASW": 0.5329, "ARI": 0.4951},
                 "Cell-JEPA (paper)": {"AvgBIO": 0.7194, "NMI": 0.7690, "ASW": 0.5811, "ARI": 0.8081}}
 
@@ -115,13 +123,68 @@ def pca_baseline(n_comps: int = 50) -> dict:
     return res
 
 
+def _ckpt_objective(name: str) -> tuple[str, str]:
+    """(fine-tune objective, JEPA variant) for a checkpoint, from its args.json / run config."""
+    args = json.load(open(os.path.join(ckpt_dir(name), "args.json")))
+    obj = args.get("objective", "scgpt")
+    variant = "faithful"
+    cfg_path = os.path.join(args.get("run_dir", ""), "config.json")
+    if obj == "jepa" and os.path.exists(cfg_path):
+        variant = json.load(open(cfg_path)).get("jepa_variant", "faithful")
+    return obj, variant
+
+
+@app.function(image=gpu_image, gpu="B300", volumes={VOL_PATH: vol}, cpu=8, memory=32768, timeout=4 * 3600)
+def finetune(name: str, seed: int = 0, overrides: dict | None = None) -> dict:
+    from src.track_a.pbmc_finetune import FinetuneConfig, run_finetune
+
+    vol.reload()
+    obj, variant = _ckpt_objective(name)
+    cfg = FinetuneConfig(objective=obj, jepa_variant=variant, seed=seed, **(overrides or {}))
+    run = f"{name}_{obj}FT_s{seed}"
+    out = os.path.join(FT_DIR, run)
+    os.makedirs(out, exist_ok=True)
+    log_f = open(os.path.join(out, "log.jsonl"), "a")
+
+    def log(m):
+        print(m, flush=True)
+        log_f.write(m + "\n")
+        log_f.flush()
+
+    res = run_finetune(cfg, ckpt_dir(name), _load_data(), out, "cuda", log=log, commit=vol.commit)
+    res.pop("history", None)
+    return {"run": run, **{k: res[k] for k in ("AvgBIO", "NMI", "ARI", "ASW", "best_resolution", "minutes")}}
+
+
 @app.local_entrypoint()
-def main(stage: str = "zeroshot", ckpts: str = "", max_genes: str = "600,1200", force: bool = False):
+def main(stage: str = "zeroshot", ckpts: str = "", max_genes: str = "1200", force: bool = False, seeds: str = "0",
+         epochs: int = 30):
     def show(x):
         print(json.dumps(x, indent=2, default=str), flush=True)
 
     if stage == "prepare":
         show(prepare.remote(force))
+        return
+    if stage == "finetune":
+        assert ckpts, "--ckpts is required for finetune"
+        ov = {} if epochs == 30 else {"epochs": epochs}
+        calls = {(n, s): finetune.spawn(n, int(s), ov) for n in ckpts.split(",") for s in seeds.split(",")}
+        lines = ["| Fine-tuned from | seed | AvgBIO | NMI | ARI | ASW | min |", "|---|---|---|---|---|---|---|"]
+        for (n, s), c in calls.items():
+            try:
+                r = c.get()
+                print(r, flush=True)
+                lines.append(f"| {r['run']} | {s} | " + " | ".join(f"{r[m]:.4f}" for m in ("AvgBIO", "NMI", "ARI", "ASW"))
+                             + f" | {r['minutes']} |")
+            except Exception as e:
+                print(n, s, "FAILED", repr(e)[:400], flush=True)
+                lines.append(f"| {n} | {s} | FAILED: {repr(e)[:80]} | | | | |")
+        for k, r in PAPER_TABLE1.items():
+            lines.append(f"| {k} | - | " + " | ".join(str(r[m]) for m in ("AvgBIO", "NMI", "ARI", "ASW")) + " | |")
+        print("\n".join(lines))
+        os.makedirs("diag/results", exist_ok=True)
+        with open("diag/results/pbmc_finetune_summary.md", "a") as f:
+            f.write("\n".join(lines) + "\n\n")
         return
     assert stage == "zeroshot", stage
     if ckpts:

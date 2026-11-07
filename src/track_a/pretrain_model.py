@@ -196,12 +196,13 @@ def combine(objective: str, recon: torch.Tensor, jepa: torch.Tensor | None) -> t
 
 def forward_losses(objective: str, student: nn.Module, teacher: nn.Module | None, predictor: nn.Module | None,
                    batch: dict, nhead: int, amp: dict, variant: str = "faithful", state: dict | None = None,
-                   update_state: bool = False) -> dict:
+                   update_state: bool = False, return_hidden: bool = False) -> dict:
     """Single student forward on the masked sequence (+ teacher forward on the unmasked one).
 
     batch: gene_ids (B,L) long, values (B,L) float (true bins; cls 0, pad -2),
            masked (B,L) bool, pad (B,L) bool.
-    Returns tensors: loss, recon, and (jepa objective) jepa.
+    Returns tensors: loss, recon, and (jepa objective) jepa; with return_hidden also "h", the
+    student's output (B, L, d) on the masked sequence (used by the PBMC fine-tune for GEPC / ECS).
     """
     gids, vals, masked, pad = batch["gene_ids"], batch["values"], batch["masked"], batch["pad"]
     in_vals = vals.masked_fill(masked, MASK_VALUE)
@@ -211,6 +212,8 @@ def forward_losses(objective: str, student: nn.Module, teacher: nn.Module | None
         pred = student.decoder(h)["pred"]
     recon = masked_mse(pred, vals, masked)
     out = {"recon": recon}
+    if return_hidden:
+        out["h"] = h
     jl = None
     if objective == "jepa":
         # Teacher sees the unmasked sequence: plain key padding is the same rule there (tested)
