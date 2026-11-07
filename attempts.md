@@ -317,6 +317,39 @@ All 16 completed (15 epochs, ~28 min for the scGPT recipe, ~38 min for the Cell-
 - **Every deep model loses to the simple baselines** (linear 0.058, training mean 0.059 vs best deep 0.074). Linear also wins on GEARS Δ-Pearson (0.72 vs ≤0.58) and per-cell metrics. This matches Ahlmann-Eltze et al. 2025.
 - **The metric scale still does not match the paper.** Our mean-based absolute Pearson is ~0.99 (paper 0.90–0.94). Our per-cell absolute Pearson (~0.85) is closer, but our Δ metrics (0.55–0.76) are far above the paper's (−0.18 to 0.17). The paper's exact metric definition remains unknown.
 
+## A16. Predicted-effect retrieval: scoring Task 3 the way a selection tool would use it (Nov 7)
+
+`diag/retrieval.py` (CPU; reads the saved `test_predictions.npz` of every Adamson run and baseline). Output in `diag/results/A16_retrieval.md` / `A16_retrieval_raw.json`.
+- **Deltas:** profile − mean of all control cells.
+- **Genes:** the 500 with the largest variance across *training*-perturbation deltas (no test information).
+- **22 held-out genes,** 58 measured training perturbations as the reference set. Seeds pooled (2 per run arm).
+
+Metrics (higher is better except mean rank):
+- **ref_spearman:** does the prediction rank the 58 measured perturbations like the true response does?
+- **ref p@5:** overlap of the top-5 most similar measured perturbations.
+- **cluster_agreement:** correlation of the predicted vs true similarity matrices among the 22 held-out genes.
+- **id_top1 / id mean rank:** is each prediction closest to its *own* gene's true response among the 22? Chance top-1 = 0.045; chance mean rank = 11.5.
+
+| Predictions | ref_spearman | ref p@5 | cluster agr. | id top-1 | id mean rank |
+|---|---|---|---|---|---|
+| (upper bound: true deltas) | 1.000 | 1.000 | 1.000 | 1.000 | 1.0 |
+| **public scGPT → Cell-JEPA FT** | **0.601** | **0.286** | **0.158** | 0.205 | **8.6** |
+| public scGPT → scGPT+ECS FT | 0.509 | 0.250 | −0.132 | **0.227** | 9.2 |
+| public scGPT + Luke's JEPA aux (Track B) | 0.565 | 0.273 | −0.050 | 0.159 | 9.3 |
+| public scGPT, MSE only (Track B) | 0.531 | 0.255 | −0.046 | 0.182 | 9.6 |
+| kidney JEPA → Cell-JEPA FT (paper arm) | 0.386 | 0.150 | 0.100 | 0.136 | 11.2 |
+| kidney scGPT → scGPT FT (paper baseline) | 0.329 | 0.136 | −0.105 | 0.136 | 11.0 |
+| other kidney arms (token/center/cross) | 0.31–0.44 | 0.11–0.18 | −0.21–0.16 | 0.07–0.14 | 10.6–11.6 |
+| **linear baseline** | 0.559 | 0.273 | 0.024 | 0.091 | 10.0 |
+| training mean | 0.496 | 0.164 | undefined | 0.045 (chance) | 11.5 |
+| no change | undefined | ~chance | undefined | 0.000 | 11.5 |
+
+- **First metric where deep models beat linear: identification.** Public-scGPT-based models pick out the right held-out gene 16–23% of the time, versus linear 9% and chance 4.5%. Their mean rank is also better (8.6–9.6 vs 10.0). The models capture gene-specific structure that the RMSE-winning baselines lack.
+- **Neighbour retrieval:** public scGPT + Cell-JEPA FT is best (0.601 vs linear 0.559). The training mean already scores 0.496 here, because all knockdowns share a common response component.
+- **Clustering held-out genes against each other fails for everyone** (|r| ≤ 0.21). With only 22 genes, this metric is noisy.
+- **The kidney checkpoints are clearly worse than public scGPT here,** and worse than linear and even the training mean on neighbour retrieval. Within the paper's pair, JEPA is slightly ahead on 3 of 4 metrics, but the differences are tiny.
+- **Caveat:** 22 test genes × 2 seeds gives very low resolution (one gene = 0.045 top-1). There are no confidence intervals yet. Next: bootstrap over genes, and a larger screen (Norman, or Replogle K562 essential) before claiming anything.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.
