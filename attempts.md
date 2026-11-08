@@ -595,6 +595,27 @@ All runs select their checkpoint by validation ID percentile. Experiment `replog
 - **Real finding:** on *real* cells, blood-JEPA's embedding space separates knockdowns far worse than scGPT's (0.685 vs 0.91–0.94 ID percentile; top-1 0.06 vs 0.55–0.74). Yet JEPA embeddings cluster *cell types* much better (PBMC, A14/A15). **JEPA (center) embeddings are more invariant to within-cell-type perturbation changes.** This matches the Cell-JEPA paper's own explanation for its weak delta metrics ("features invariant across masked views ... may suppress sensitivity to perturbation-induced deviations").
 - Caveats: one JEPA variant (`center`, continued from public scGPT, 2 epochs); 31 genes; the ceiling uses ≤256 cells per knockdown split in half.
 
+## A27. Is the perturbation signal erased by JEPA's embedding, or only squashed? (Nov 7)
+
+`diag/latent_transforms.py`, real cells only (no prediction models), ~$3. For each embedding space × readout (`<cls>` / mean of gene tokens) × transform (raw; ZCA whitening on control cells; remove top-10 control PCs; LDA fitted on training knockdowns), each knockdown's real cells are split in half, and we ask whether half A's latent shift identifies half B's (symmetric). Gene sets: 31 validation genes, and 278 training genes for the transforms that do not learn from them. Full table: `diag/results/A27_latent_transforms.md`.
+
+Best transform per space (ID percentile, val / train; top-1 val / train):
+
+| Space | Raw `<cls>` | Best transform | Best ID pct (val / train) | Best top-1 (val / train) |
+|---|---|---|---|---|
+| gene expression (no model) | 0.996 / 0.986 | – | **0.996 / 0.986** | 0.92 / 0.66 |
+| public scGPT | 0.944 / 0.904 | whitening / LDA | 0.992 (LDA) / 0.970 (whiten) | 0.87 / 0.43 |
+| blood-scGPT | 0.905 / 0.850 | whitening / LDA | 0.988 (LDA) / 0.963 (whiten, tok) | 0.82 / 0.44 |
+| **blood-JEPA (`center`)** | **0.666 / 0.633** | whitening, token readout | **0.810 / 0.738** | 0.24 / 0.04 |
+
+- **Partly squashed, mostly lost.** Whitening (rescaling every direction by its spread among control cells) recovers a lot for JEPA: +0.14 val, +0.11 train ID percentile; top-1 0.08 → 0.24. So some perturbation signal is hidden in low-variance directions, which is the user's "smoothing" intuition. But the same transforms lift the scGPT spaces to ~0.97–0.99. **The gap stays large (0.81 vs 0.98 val; 0.74 vs 0.96 train; train top-1 0.04 vs 0.42–0.44).** Most of the knockdown-specific information is genuinely absent from the blood-JEPA (`center`) embedding.
+- **Gene-expression space is the best space of all** (0.996 / 0.986). Every learned embedding loses some perturbation information relative to the raw expression panel. Even whitened public scGPT is a little below it on top-1.
+- The `<cls>` vs token readout makes little difference. Whitening ≥ remove-PCs. LDA helps the scGPT spaces most on val top-1.
+- **Implications:**
+  1. Retrieval for the tool should stay in expression space. That is what A22/A25 do.
+  2. The JEPA trade-off is now quantified on real cells: blood-JEPA (`center`) embeddings group cell types well (A14/A15) but keep far less knockdown-specific information, even after un-smoothing.
+  3. Untested: whether this is specific to `center`/continued pretraining or general to JEPA. Kidney `faithful`/`token`/`center` vs kidney scGPT would answer it cheaply.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.
