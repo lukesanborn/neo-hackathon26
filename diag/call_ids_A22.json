@@ -1,0 +1,10 @@
+{
+ "public scgpt_paper s1": "fc-01M6W79NTPYC6PS7KQ4ZWNXHWM",
+ "public scgpt_paper s2": "fc-01M6W79NY8K0R8CT1GDDWMKDM4",
+ "public celljepa s1": "fc-01M6W79P1M2P1W8432RDGFXQW8",
+ "public celljepa s2": "fc-01M6W79P54F81DXZ6A1W0271E8",
+ "kidney scGPT -> scgpt_paper s1": "fc-01M6W79P8J1SXZDP3F0FX2NNMY",
+ "kidney scGPT -> scgpt_paper s2": "fc-01M6W79PCAXENBB26YDFGMCC73",
+ "kidney JEPA -> celljepa s1": "fc-01M6W79PG5XRWHZS2C72YWRRGW",
+ "kidney JEPA -> celljepa s2": "fc-01M6W79PKMWJWPAVD33GE3W5XZ"
+}
