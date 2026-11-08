@@ -73,11 +73,11 @@ PLAIN = "scgpt_paper_public"
 models = [("PCA linear baseline", "baselines/linear", GRAY),
           ("scGPT, fine-tuned", PLAIN, PURPLE),
           ("Our model", BEST, TEAL)]
-fig = plt.figure(figsize=(15, 8.2), facecolor=BG)
+fig = plt.figure(figsize=(15, 7.0), facecolor=BG)
 title(fig, "Our model identifies the knocked-down gene far better than PCA",
       "Given an unseen knockdown's measured response, rank all 103 candidate genes. Where does the true gene land?")
-axA = fig.add_axes([0.14, 0.32, 0.34, 0.5])
-axB = fig.add_axes([0.585, 0.32, 0.3, 0.5])
+axA = fig.add_axes([0.14, 0.2, 0.34, 0.58])
+axB = fig.add_axes([0.585, 0.2, 0.3, 0.58])
 
 style(axA)
 ys = np.arange(len(models))[::-1]
@@ -93,16 +93,6 @@ axA.set_xlim(0.5, 0.9)
 axA.set_xticks([0.5, 0.6, 0.7, 0.8, 0.9])
 axA.set_xticklabels(["0.5\nchance", "0.6", "0.7", "0.8", "0.9"])
 axA.set_title("A. ID percentile  (1 = true gene ranked first)", fontsize=13, color=INK, loc="left", pad=12)
-lines = []
-for a, b, lab, col in ((BEST, "baselines/linear", "Our model − PCA", TEAL),
-                       (PLAIN, "baselines/linear", "scGPT fine-tuned − PCA", PURPLE),
-                       (BEST, PLAIN, "Our model − scGPT fine-tuned", TEAL)):
-    d, lo, hi = ci_mean(pg(a) - pg(b))
-    lines.append((f"{lab}:  +{d:.2f}  [95% CI +{lo:.2f}, +{hi:.2f}]", col))
-for i, (t, col) in enumerate(lines):
-    axA.text(0.0, -0.2 - 0.075 * i, t, fontsize=11.5 if i else 12.5, color=col, fontweight="bold" if i == 0 else "normal",
-             transform=axA.transAxes)
-
 style(axB, "both")
 ks = np.arange(1, 31)
 axB.plot(ks, ks / N, color=GRAY_LIGHT, lw=2, ls=(0, (4, 3)))
