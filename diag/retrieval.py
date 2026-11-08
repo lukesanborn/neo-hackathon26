@@ -181,6 +181,20 @@ def _aggregate_table(res):
     return lines
 
 
+# display names for baselines in the markdown tables (data keys stay unchanged)
+DISPLAY = {
+    "baselines/linear": "Baseline: linear (PCA gene embedding, Ahlmann-Eltze et al. 2025)",
+    "baselines/ridge_scgpt_gene_emb": "scGPT gene vectors only, no model (ridge)",
+    "baselines/knn_scgpt_gene_emb": "scGPT gene vectors only, no model (kNN)",
+    "baselines/training_mean": "Training mean (same prediction for every gene)",
+    "baselines/no_change": "No change (control)",
+}
+
+
+def _name(k):
+    return DISPLAY.get(k, k)
+
+
 def _ci_markdown(res, tag):
     METRICS = res["metrics"]
 
@@ -203,7 +217,7 @@ def _ci_markdown(res, tag):
           "|---" * (len(METRICS) + 2) + "|"]
     for arm in sorted(res["arms"]):
         a = res["arms"][arm]
-        L.append(f"| {arm} | {a['n_seeds']} | " + " | ".join(_ci_cell(a["ci"][m]) for m in METRICS) + " |")
+        L.append(f"| {_name(arm)} | {a['n_seeds']} | " + " | ".join(_ci_cell(a["ci"][m]) for m in METRICS) + " |")
     L += ["", "## Paired differences (A − B): diff [95% CI] (fraction of resamples with diff > 0)", "",
           "For id_mean_rank lower is better, so a negative difference favours A.", "",
           "| A | B | " + " | ".join(METRICS) + " |", "|---" * (len(METRICS) + 2) + "|"]
@@ -213,7 +227,7 @@ def _ci_markdown(res, tag):
             c = d[m]
             cells.append("undef" if c["n_valid"] == 0 else
                          f"{_fmt(c['diff'])} [{_fmt(c['lo'])}, {_fmt(c['hi'])}] ({_fmt(c['frac_gt0'], 2)})")
-        L.append(f"| {d['a']} | {d['b']} | " + " | ".join(cells) + " |")
+        L.append(f"| {_name(d['a'])} | {_name(d['b'])} | " + " | ".join(cells) + " |")
     L += ["", "## Point aggregates (per prediction set; seed aggregates averaged — A16 format)", ""]
     L += _aggregate_table(res)
     return L

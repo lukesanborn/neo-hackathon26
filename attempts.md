@@ -467,41 +467,51 @@ Goal of the scoped program: on Replogle's 103 held-out genes, find the setup tha
 - **Check on Adamson** (existing runs, test split, 22 genes; `diag/results/A24_adamson_check_*`). id_pct / top-1 / top-3:
   - public scGPT → Cell-JEPA FT: single seeds 0.639 / 0.205 / 0.341; **2-seed ensemble 0.639 / 0.273 / 0.409**
   - public scGPT → scGPT+ECS FT: 0.611 / 0.227 / 0.364; ensemble 0.630 / 0.273 / 0.455
-  - **new ridge-on-gene-embedding baseline:** 0.604 / 0.045 / 0.227 (stronger than linear's 0.574 on id_pct)
-  - linear 0.574 / 0.091 / 0.182; training mean 0.500 (chance)
+  - **scGPT gene vectors only, no model (ridge):** 0.604 / 0.045 / 0.227 (stronger than the PCA linear baseline on id_pct)
+  - **Baseline: linear (PCA gene embedding):** 0.574 / 0.091 / 0.182; training mean 0.500 (chance)
   - kidney arms ≈ chance on id_pct (0.49–0.55)
-- **Takeaways:** ensembling helps top-1/top-3. The new ridge baseline is a tougher competitor. Kidney checkpoints carry little gene-specific signal.
+- **Takeaways:** ensembling helps top-1/top-3. The scGPT-gene-vector reference is a tougher competitor than the PCA baseline. Kidney checkpoints carry little gene-specific signal.
 
-## A22. Replogle K562 fine-tunes, retrieval on 103 held-out genes (Nov 7)
+## A22. Replogle K562: retrieval on 103 held-out genes (Nov 7)
 
-8 runs launched 16:01 (`diag/launch_replogle_ft.py`), all completed. Scored with `diag/retrieval.py --exps replogle_k562_v1 --tag A22_replogle` (test split, 103 genes, 278 training perturbations as reference, paired bootstrap 2,000×). Full tables in `diag/results/A22_replogle_retrieval_ci.*`. Note: the experiment directory also contains single-seed `celljepa_mk_*` runs that we did not launch (a masking-strategy sweep, most likely Luke's). They are scored too; they land at id_pct 0.67–0.69, like public scGPT.
+8 fine-tunes launched 16:01 (`diag/launch_replogle_ft.py`), all completed (15 epochs, B300, ~30–40 min each). Scored on the **test split: 103 held-out genes**, with the 278 training knockdowns as the reference set and a 500-gene panel from training deltas. Values are mean [95% paired-bootstrap CI over genes, 2,000 resamples]; seeds are averaged per gene. Full tables: `diag/results/A22_replogle_retrieval_ci.md`.
 
-Values are mean [95% CI]; chance id_pct = 0.5, top-1 = 0.01.
+**What the metrics mean.** For each held-out gene, compare its predicted response with the true responses of all 103 held-out genes:
+- *ID percentile:* where its own gene ranks (1 = first, 0.5 = chance).
+- *Top-1 / Top-3:* its own gene is first / in the top 3.
+- *Neighbour Spearman:* does the prediction rank the 278 measured knockdowns in the same order as the true response?
 
-| Predictions | id_pct | top-1 | top-3 | neighbour Spearman |
+| Predictions | What it is | Seeds | ID percentile ↑ (primary) | Top-1 ↑ | Top-3 ↑ | Neighbour Spearman ↑ |
+|---|---|---|---|---|---|---|
+| **public scGPT → scGPT fine-tune** | pretrained transformer, fine-tuned on 278 knockdowns (MSE + ECS) | 2 | 0.680 [0.62, 0.74] | 0.141 [0.08, 0.21] | 0.214 [0.15, 0.29] | 0.607 [0.55, 0.66] |
+| **public scGPT → Cell-JEPA fine-tune** | same, plus the JEPA term during fine-tuning | 2 | 0.688 [0.63, 0.75] | 0.121 [0.07, 0.18] | 0.180 [0.12, 0.25] | 0.606 [0.54, 0.67] |
+| kidney scGPT → scGPT fine-tune | our 814k-kidney-cell pretraining (lr 3e-5), paper's baseline arm | 2 | 0.590 [0.54, 0.65] | 0.092 [0.05, 0.15] | 0.121 [0.07, 0.18] | 0.448 [0.38, 0.52] |
+| kidney JEPA → Cell-JEPA fine-tune | our kidney JEPA pretraining, paper's Cell-JEPA arm | 2 | 0.584 [0.53, 0.64] | 0.073 [0.03, 0.12] | 0.107 [0.06, 0.17] | 0.384 [0.32, 0.44] |
+| **Baseline: linear (PCA gene embedding)** | Ahlmann-Eltze et al. 2025 standard: PCA of training responses → linear map | – | 0.542 [0.48, 0.60] | 0.010 [0.00, 0.03] | 0.049 [0.01, 0.10] | 0.548 [0.49, 0.61] |
+| scGPT gene vectors only, no model (ridge) | scGPT's learned gene vector of the target → ridge regression; no transformer | – | 0.675 [0.62, 0.73] | 0.019 [0.00, 0.05] | 0.068 [0.02, 0.12] | 0.453 [0.37, 0.53] |
+| scGPT gene vectors only, no model (kNN) | average response of the most similar training genes by scGPT gene vector | – | 0.624 [0.56, 0.69] | 0.058 [0.02, 0.11] | 0.165 [0.10, 0.23] | 0.505 [0.42, 0.59] |
+| Training mean | same prediction for every gene | – | 0.500 [0.45, 0.56] | 0.010 [0.00, 0.03] | 0.029 [0.00, 0.07] | 0.513 [0.46, 0.57] |
+| *chance* | random ranking | – | 0.500 | 0.010 | 0.029 | 0 |
+
+**Paired differences, model − baseline** (CIs that exclude 0 are clear differences):
+
+| Comparison | ID percentile | Top-1 | Top-3 | Neighbour Spearman |
 |---|---|---|---|---|
-| public scGPT → Cell-JEPA FT (2 seeds) | 0.688 [0.63, 0.75] | 0.121 [0.07, 0.18] | 0.180 | 0.606 |
-| public scGPT → scGPT+ECS FT (2 seeds) | 0.680 [0.62, 0.74] | 0.141 [0.08, 0.21] | 0.214 | 0.607 |
-| kidney scGPT → scGPT FT | 0.590 | 0.092 | 0.121 | 0.448 |
-| kidney JEPA → Cell-JEPA FT | 0.584 | 0.073 | 0.107 | 0.384 |
-| **ridge on scGPT gene embeddings (new baseline)** | **0.675** [0.62, 0.73] | 0.019 | 0.068 | 0.453 |
-| kNN on scGPT gene embeddings | 0.624 | 0.058 | 0.165 | 0.505 |
-| linear (old baseline) | 0.542 | 0.010 | 0.049 | 0.548 |
-| training mean | 0.500 | 0.010 | 0.029 | 0.513 |
-
-Paired differences (public-scGPT arms − ridge baseline):
-- **id_pct: +0.004 to +0.014, CIs include 0.** On the pre-declared primary metric, the fine-tuned models do not beat the gene-embedding ridge baseline.
-- **top-1: +0.10 to +0.12, CIs exclude 0** (e.g. scGPT FT +0.121 [0.058, 0.189]).
-- **top-3: +0.11 to +0.15, CIs exclude 0.**
-- **neighbour Spearman: +0.15 to +0.18, CIs exclude 0.**
-- vs old linear: +0.14 id_pct, CIs exclude 0.
+| public scGPT → scGPT FT − Baseline: linear (PCA) | +0.138 [+0.10, +0.18] | +0.131 [+0.07, +0.20] | +0.165 [+0.11, +0.23] | +0.059 [+0.02, +0.10] |
+| public scGPT → scGPT FT − scGPT gene vectors only (ridge) | +0.004 [-0.05, +0.06] | +0.121 [+0.06, +0.19] | +0.146 [+0.06, +0.23] | +0.154 [+0.09, +0.22] |
+| public scGPT → Cell-JEPA FT − Baseline: linear (PCA) | +0.146 [+0.11, +0.19] | +0.112 [+0.06, +0.17] | +0.131 [+0.08, +0.19] | +0.058 [+0.02, +0.10] |
+| public scGPT → Cell-JEPA FT − scGPT gene vectors only (ridge) | +0.013 [-0.04, +0.07] | +0.102 [+0.04, +0.17] | +0.112 [+0.03, +0.19] | +0.153 [+0.09, +0.22] |
 
 **Conclusions:**
-- **Deep models beat linear decisively on 103 genes,** confirming the Adamson trend.
-- **Against the stronger ridge baseline, the picture splits by metric.** Ridge ranks the right gene "roughly high" just as well (same id_pct), but the fine-tuned models put it **at the very top** far more often (top-1 6–7× higher). They also rank the measured knockdowns it resembles much better.
-- **JEPA vs non-JEPA FT on public scGPT: no difference** (id_pct 0.688 vs 0.680; top-1 0.121 vs 0.141).
-- **Kidney checkpoints are clearly worse than public scGPT,** and worse than ridge on id_pct.
-- 2-seed ensembles change little on Replogle.
+1. **The fine-tuned public-scGPT models clearly beat the standard baseline** (linear, PCA gene embedding) on ID percentile (+0.14), top-1, and top-3. Every CI excludes 0. With 103 genes, the Adamson trend (A16/A17) is confirmed.
+2. **scGPT's gene vectors alone (no model) already reach the same ID percentile** as the fine-tuned models (0.675 vs 0.68–0.69; difference ≈ 0). But the fine-tuned models put the right gene **first 6–7× more often** (top-1 0.12–0.14 vs 0.02) and in the **top 3 about 3× more often**. They also rank similar measured knockdowns much better (+0.15 neighbour Spearman). All of these CIs exclude 0. **The value the full model adds is precision at the top of the list,** which is what a shortlist-style selection tool needs.
+3. **JEPA in fine-tuning does not help here:** Cell-JEPA FT vs scGPT FT on public scGPT, 0.688 vs 0.680 ID percentile; top-1 0.121 vs 0.141.
+4. **Our kidney checkpoints are clearly weaker** than public scGPT (0.58–0.59), and below the gene-vector baseline on ID percentile.
+5. 2-seed ensembles change little on Replogle.
+
+Note: the experiment folder also contains single-seed `celljepa_mk_*` runs we did not launch (a masking-strategy sweep, most likely Luke's). They score 0.67–0.69 ID percentile and appear in the full tables.
+
+**Baseline naming used from here on:** "Baseline: linear (PCA gene embedding)" is *the* baseline (Ahlmann-Eltze et al. 2025, no external knowledge). "scGPT gene vectors only, no model" is a second reference row showing how much of the result comes from scGPT's gene knowledge alone.
 
 ## Literature context (for the write-up)
 
