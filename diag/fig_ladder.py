@@ -62,7 +62,7 @@ big = max(model_jumps, key=lambda i: model_jumps[i])
 for y, (lab, arm, g), (m, lo, hi), j in zip(ys, STEPS, pct, jumps):
     col = GROUPS[g][0]
     if BARS:
-        ax.barh(y, m, height=0.62, color=col, edgecolor=SURF, linewidth=2, zorder=2)
+        ax.barh(y, m - 0.5, left=0.5, height=0.62, color=col, edgecolor=SURF, linewidth=2, zorder=2)
         ax.plot([lo, hi], [y, y], color=INK, lw=1.2, zorder=3)
         ax.plot([lo, lo], [y - 0.12, y + 0.12], color=INK, lw=1.2, zorder=3)
         ax.plot([hi, hi], [y - 0.12, y + 0.12], color=INK, lw=1.2, zorder=3)
@@ -74,13 +74,17 @@ for y, (lab, arm, g), (m, lo, hi), j in zip(ys, STEPS, pct, jumps):
         bold = (ys.index(y) == big)
         jx.text(0.5, y, f"{j:+.3f}", va="center", ha="center", fontsize=11 if bold else 10,
                 fontweight="bold" if bold else "normal", color=INK if bold else INK2)
-ax.axvline(0.5, color=INK2, lw=1, ls=(0, (3, 3)), zorder=1)
-ax.text(0.5, len(STEPS) - 0.35, "chance", ha="center", va="bottom", fontsize=9, color=INK2)
+if BARS:
+    ax.axvline(0.5, color=INK2, lw=1.2, zorder=1)
+    ax.text(0.502, len(STEPS) - 0.35, "chance (0.5): bars start here", ha="left", va="bottom", fontsize=9, color=INK2)
+else:
+    ax.axvline(0.5, color=INK2, lw=1, ls=(0, (3, 3)), zorder=1)
+    ax.text(0.5, len(STEPS) - 0.35, "chance", ha="center", va="bottom", fontsize=9, color=INK2)
 ax.set_yticks(ys)
 ax.set_yticklabels([s[0] for s in STEPS])
-ax.set_xlim((0, 1.0) if BARS else (0.40, 0.95))
+ax.set_xlim((0.5, 0.95) if BARS else (0.40, 0.95))
 ax.set_ylim(-0.6, len(STEPS) - 0.1)
-ax.set_xlabel("ID percentile (primary metric; 1 = own gene ranked first, 0.5 = chance)")
+ax.set_xlabel("ID percentile (primary metric; 1 = own gene ranked first)" + (" — axis starts at chance, 0.5" if BARS else ", 0.5 = chance"))
 ax.grid(axis="x", color=GRID, lw=0.8)
 ax.set_axisbelow(True)
 for sp in ("top", "right", "left"):
