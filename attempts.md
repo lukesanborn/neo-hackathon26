@@ -541,7 +541,7 @@ Note: the experiment folder also contains single-seed `celljepa_mk_*` runs we di
 - JEPA reconstructs a little worse (10.25 vs 9.13), the expected cost of the extra objective (as in A9/A19). Both are far below public scGPT's starting point on kidney (~82 at step 0; different corpus, so only indicative).
 - Checkpoints: `trackA/checkpoints/scgpt_kidney_blood_lr3e5` and `trackA/checkpoints/jepa_kidney_blood_lr3e5`. The `_kidney` in the name is only the export-naming convention; the tag marks the blood corpus.
 
-## A25. Step 2 screen on Replogle: launched (Nov 7, ~19:05)
+## A25. Step 2 screen on Replogle (Nov 7, launched ~19:05, done 19:57)
 
 `diag/launch_step2_screen.py`, 24 runs, call ids in `diag/call_ids_A25.json`. Factors:
 - starting point {public scGPT, blood-scGPT, blood-JEPA `center`}
@@ -553,29 +553,31 @@ All runs select their checkpoint by validation ID percentile. Experiment `replog
 - **Metric decision (user, Nov 7):** ID percentile stays the single primary metric. Top-1, top-3 and **top-10** (added now that n = 103) are secondary.
 - **Confound to note:** public scGPT runs use log1p inputs (as in all earlier public runs), while the blood checkpoints use bins50 (as pretrained). So blood-vs-public mixes pretraining and input format. The key comparison, blood-JEPA vs blood-scGPT, is fully matched.
 
-**Partial results (19:45; scGPT-recipe runs only, 12 of 24 done).** Validation split, 31 genes; chance: ID percentile 0.5, top-1 0.032, top-3 0.097, top-10 0.32. Mean [95% CI]; "2-seed ens" = the two seeds' predictions averaged. Source: `diag/results/A25_val_partial_retrieval_ci.md`.
+**Full results (19:57; all 24 runs done).** Validation split, 31 genes; chance: ID percentile 0.5, top-1 0.032, top-3 0.097, top-10 0.32. Top-k columns are 2-seed means. CIs for single arms are about ±0.08–0.10 (see `diag/results/A25_val_retrieval_ci.md`).
 
-| Starting point → scGPT fine-tune | Contrastive loss | ID percentile | Top-1 | Top-3 | Top-10 |
-|---|---|---|---|---|---|
-| public scGPT | off | 0.697 [0.59, 0.80] | 0.226 | 0.452 | 0.581 |
-| public scGPT | **on** | 0.774 [0.69, 0.86] | 0.339 | 0.468 | 0.677 |
-| blood-scGPT | off | 0.746 [0.65, 0.84] | 0.290 | 0.403 | 0.694 |
-| blood-scGPT | on | 0.769 [0.68, 0.85] | 0.258 | 0.419 | 0.677 |
-| **blood-JEPA** | off | 0.744 [0.65, 0.84] | 0.306 | 0.452 | 0.694 |
-| **blood-JEPA** | on | 0.774 [0.70, 0.85] | 0.258 | 0.403 | 0.710 |
-| blood-JEPA, on, 2-seed ens | on | **0.805** [0.72, 0.88] | 0.355 | 0.452 | 0.710 |
-| public, on, 2-seed ens | on | 0.795 [0.70, 0.88] | 0.355 | 0.548 | 0.710 |
-| scGPT gene vectors only (ridge)* | – | 0.676 [0.56, 0.78] | 0.065 | 0.290 | 0.645 |
+| Starting point | Fine-tune | Contrastive | ID percentile (2-seed mean) | ID percentile (2-seed ens) | Top-1 | Top-3 | Top-10 |
+|---|---|---|---|---|---|---|---|
+| public scGPT | scGPT | off | 0.697 | 0.701 | 0.226 | 0.452 | 0.581 |
+| public scGPT | scGPT | on | 0.774 | 0.795 | 0.339 | 0.468 | 0.677 |
+| public scGPT | Cell-JEPA | off | 0.668 | 0.668 | 0.242 | 0.355 | 0.532 |
+| public scGPT | Cell-JEPA | on | 0.745 | 0.775 | 0.339 | 0.403 | 0.613 |
+| blood-scGPT | scGPT | off | 0.746 | 0.778 | 0.290 | 0.403 | 0.694 |
+| blood-scGPT | scGPT | on | 0.769 | 0.792 | 0.258 | 0.419 | 0.677 |
+| blood-scGPT | Cell-JEPA | off | 0.739 | 0.745 | 0.210 | 0.403 | 0.726 |
+| blood-scGPT | Cell-JEPA | on | 0.775 | 0.809 | 0.258 | 0.468 | 0.694 |
+| **blood-JEPA** | scGPT | off | 0.744 | 0.773 | 0.306 | 0.452 | 0.694 |
+| **blood-JEPA** | scGPT | on | 0.774 | 0.805 | 0.258 | 0.403 | 0.710 |
+| **blood-JEPA** | Cell-JEPA | off | 0.743 | 0.744 | 0.323 | 0.435 | 0.710 |
+| **blood-JEPA** | Cell-JEPA | on | 0.778 | 0.816 | 0.339 | 0.468 | 0.694 |
 
-\*The gene-vector baselines choose their one setting on these same validation genes, so their validation numbers are slightly optimistic.
+**Factor effects** (ID percentile, 2-seed means; each compares otherwise-identical configs):
+- **Contrastive retrieval loss, on − off:** public +0.077 / +0.077 (scGPT / Cell-JEPA FT); blood-scGPT +0.023 / +0.036; blood-JEPA +0.030 / +0.035. **The only consistent lever**, largest for public scGPT.
+- **JEPA pretraining, blood-JEPA − blood-scGPT:** −0.002, +0.005, +0.004, +0.003 across the 4 recipe × loss cells. **≈ 0: no effect of JEPA continued pretraining on retrieval.**
+- **Cell-JEPA fine-tune − scGPT fine-tune:** public −0.029 / −0.029 (worse); blood −0.007 to +0.006 (≈ 0).
+- **Blood vs public:** +0.04–0.08 without the contrastive loss; ≈ 0–0.03 with it (part of this may be the bins50-vs-log1p input difference, see above).
+- **2-seed ensembles:** +0.02–0.04. Best: blood-JEPA → Cell-JEPA FT + contrastive, ens 0.816; blood-scGPT → Cell-JEPA FT + contrastive, ens 0.809.
 
-- **Blood-JEPA vs blood-scGPT: tied** (0.744 vs 0.746 without the contrastive loss; 0.774 vs 0.769 with it). JEPA continued pretraining does not change retrieval at this resolution.
-- **The contrastive loss is the clearest lever for public scGPT** (+0.08). For the blood checkpoints it adds +0.02–0.03.
-- **Blood pretraining helps without the contrastive loss** (+0.05 over public); with it, all three starting points tie (~0.77).
-- 2-seed ensembles add ~+0.02–0.03.
-- 31 genes give wide CIs (±0.08–0.10). No difference between deep configs is resolved yet.
-
-*Cell-JEPA-recipe half pending.*
+**Bottom line of the screen:** the contrastive loss, blood pretraining and ensembling each help; **JEPA (in pretraining or in fine-tuning) does not move retrieval** in this setup. No deep-config difference is resolved on 31 genes.
 
 ## Literature context (for the write-up)
 
