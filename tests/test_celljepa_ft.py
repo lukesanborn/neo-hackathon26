@@ -280,3 +280,20 @@ def test_scgpt_paper_pilot_gates(fake_env, monkeypatch, tmp_path):
     assert not any(k.startswith("scgpt_paper_") and "teacher" in k for k in g)
     assert "teacher_has_grads" not in rep["methods"]["scgpt_paper"]
     assert rep["methods"]["scgpt_paper"]["init_state_hash"] == rep["methods"]["celljepa"]["init_state_hash"]
+
+
+@pytest.mark.parametrize("method", ["scgpt", "scgpt_paper", "celljepa"])
+def test_retrieval_loss_and_selection_option(fake_env, method):
+    ds = fake_env
+    tr = _trainer(ds, method, retr_weight=1.0, selection="retrieval")
+    assert tr.retr_R.shape == (len(tr.pert_conds), ds.n_genes)
+    perm = np.random.default_rng(0).permutation(len(tr.train_cells))   # mix perturbed + control cells
+    out = tr.train_step(perm[:16])
+    assert np.isfinite(out["loss"]) and "loss_retr" in out and out["loss_retr"] > 0
+    cfg = tr.cfg
+    assert "retrieval" in cfg.checkpoint_selection
+    assert any("contrastive retrieval loss" in d for d in cfg.deviations)
+    # defaults unchanged: no retrieval loss term, delta-RMSE selection
+    base = _trainer(ds, method)
+    out0 = base.train_step(perm[:16])
+    assert "loss_retr" not in out0 and base.cfg.selection == "delta_rmse"

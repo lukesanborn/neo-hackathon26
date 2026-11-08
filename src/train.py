@@ -122,6 +122,10 @@ class TrainConfig:
     max_minutes: float = 150.0
     reserve_minutes: float = 15.0       # time kept for reload check + test evaluation
     max_steps_per_epoch: int | None = None
+    # retrieval (A24): checkpoint selection and an optional contrastive retrieval loss; defaults = unchanged
+    selection: str = "delta_rmse"       # "delta_rmse" | "retrieval" (max validation identification percentile)
+    retr_weight: float = 0.0            # >0: InfoNCE on predicted deltas vs TRAINING-perturbation mean deltas
+    retr_tau: float = 0.1
     checkpoint_selection: str = "min validation mean per-intervention delta RMSE"
     deviations: list = field(default_factory=lambda: [
         "bf16 autocast (tutorial: fp16 + GradScaler)",
@@ -143,6 +147,10 @@ class TrainConfig:
             self.track = "A"
         assert self.input_transform in INPUT_TRANSFORMS, self.input_transform
         assert self.teacher_update in TEACHER_UPDATES, self.teacher_update
+        assert self.selection in ("delta_rmse", "retrieval"), self.selection
+        if self.selection == "retrieval":
+            self.checkpoint_selection = ("validation retrieval: max identification percentile (id_pct) of predicted vs observed "
+                                         "deltas among validation conditions, 500-gene panel from training deltas")
         # extra deviations only for non-default settings, so default configs match Track B exactly
         dev = list(self.deviations)
         pub = "public whole-human scGPT checkpoint (not Cell-JEPA kidney pretraining)"
@@ -153,6 +161,11 @@ class TrainConfig:
         if self.input_transform == "bins50" and bins not in dev:
             dev.append(bins)
         dev += [d for d in METHOD_DEVIATIONS.get(self.method, ()) if d not in dev]
+        if self.retr_weight > 0:
+            dev.append(f"contrastive retrieval loss (weight {self.retr_weight}, tau {self.retr_tau}): predicted "
+                       "per-cell deltas vs training-perturbation mean deltas (training conditions only)")
+        if self.selection == "retrieval":
+            dev.append("checkpoint selected by validation retrieval (id_pct), not delta RMSE")
         self.deviations = dev
 
 
@@ -223,6 +236,11 @@ class Trainer:
         self.pert_conds = [c for c in train_conds if c != CTRL]
         cid = {c: i for i, c in enumerate(self.pert_conds)}
         self.train_cid = np.array([cid.get(c, -1) for c in cond_of_cell[self.train_cells]])
+        if cfg.retr_weight > 0:   # training-perturbation mean deltas (training cells only)
+            ctrl_ref = self.X[torch.as_tensor(ctrl_idx, device=device)].mean(0)
+            self.retr_ctrl = ctrl_ref
+            self.retr_R = torch.stack([self.X[torch.as_tensor(np.flatnonzero(cond_of_cell == c), device=device)].mean(0)
+                                       - ctrl_ref for c in self.pert_conds])
         self.steps_per_epoch = math.ceil(len(self.train_cells) / cfg.batch_size)
         if cfg.max_steps_per_epoch:
             self.steps_per_epoch = min(self.steps_per_epoch, cfg.max_steps_per_epoch)
@@ -356,8 +374,20 @@ class Trainer:
             "dec_vals": self.X[pair_t[:, None], sel] if binned else None,
             # Cell-JEPA teacher input: the paired PERTURBED cell, same genes (encoder space)
             "teacher_vals": (self.X_in[cell_t[:, None], sel] if binned else y_sel) if self.cfg.method == "celljepa" else None,
+            "sel": sel,
         }
         return src, x[:, sel], flags, mask, y_sel, extra
+
+    def _retr_loss(self, pred_genes, b: np.ndarray, sel):
+        """InfoNCE: each perturbed training cell's predicted delta should be closest (cosine) to the mean
+        delta of its OWN training perturbation among all training perturbations. None if no such cells."""
+        cid = torch.as_tensor(self.train_cid[b], device=self.device)
+        m = cid >= 0
+        if not m.any():
+            return None
+        d = F.normalize(pred_genes[m].float() - self.retr_ctrl[sel], dim=-1)
+        R = F.normalize(self.retr_R[:, sel], dim=-1)
+        return F.cross_entropy(d @ R.T / self.cfg.retr_tau, cid[m])
 
     def train_step(self, b: np.ndarray) -> dict:
         if self.use_cls:
@@ -379,6 +409,11 @@ class Trainer:
                 loss_aux = cosine_aux_loss(z, self.targets[cid[sel]])
                 loss = loss + self.cfg.aux_weight * loss_aux
                 out["loss_aux"] = float(loss_aux)
+        if self.cfg.retr_weight > 0:
+            lr_ = self._retr_loss(pred, b, ex["sel"])
+            if lr_ is not None:
+                loss = loss + self.cfg.retr_weight * lr_
+                out["loss_retr"] = float(lr_)
         if not torch.isfinite(loss):
             raise FloatingPointError(f"non-finite loss {out}")
         self.opt.zero_grad(set_to_none=True)
@@ -427,6 +462,11 @@ class Trainer:
                 out["jepa_meanpred_baseline"] = float(cosine_aux_loss(t.mean(0, keepdim=True).expand_as(t), t))
                 off = ~torch.eye(len(t), dtype=torch.bool, device=t.device)
                 out["teacher_cls_pairwise_cos"] = float((t @ t.T)[off].mean()) if len(t) > 1 else float("nan")
+        if cfg.retr_weight > 0:
+            lr_ = self._retr_loss(pred[:, 1:], b, ex["sel"])
+            if lr_ is not None:
+                loss = loss + cfg.retr_weight * lr_
+                out["loss_retr"] = float(lr_)
         if not torch.isfinite(loss):
             raise FloatingPointError(f"non-finite loss {out}")
         self.opt.zero_grad(set_to_none=True)
@@ -544,7 +584,25 @@ def run_training(ds: Dataset, ckpt_dir: str, cfg: TrainConfig, run_dir: str, com
     _write(run_dir, "environment.json", env_info())
     commit()
 
-    best = (math.inf, -1)
+    # validation retrieval (always logged; used for selection when cfg.selection == "retrieval"):
+    # deltas vs the control reference, on the 500-gene panel of highest TRAINING-delta variance
+    from .retrieval import id_scores, panel_genes
+    ctrl_ref = np.asarray(ds.control_reference())
+    train_perts = [c for c in ds.split["train"] if c != CTRL]
+    R_train = np.stack([np.asarray(ds.observed_mean(c)) - ctrl_ref for c in train_perts])
+    panel = panel_genes(R_train)
+    val_conds = list(ds.split["val"])
+    T_val = np.stack([np.asarray(ds.observed_mean(c)) - ctrl_ref for c in val_conds])[:, panel]
+
+    def val_retrieval(preds):
+        if len(val_conds) < 2:
+            return {}
+        P = np.stack([np.asarray(preds[c]) - ctrl_ref for c in val_conds])[:, panel]
+        return id_scores(P, T_val)
+
+    best = (math.inf, -1)   # (criterion to minimise, epoch)
+    best_val_retr = {}
+    best_val_sum = {}
     ckpt_path = os.path.join(run_dir, "best.pt")
     best_val_preds = None
     budget_s = cfg.max_minutes * 60
@@ -568,13 +626,18 @@ def run_training(ds: Dataset, ckpt_dir: str, cfg: TrainConfig, run_dir: str, com
         val_preds, _, val_sum = tr.evaluate("val")
         epochs_done = epoch + 1
         ep_s = time.time() - t_ep
+        vr = val_retrieval(val_preds)
         log("epoch", epoch=epoch, seconds=round(ep_s, 1), train={k: v / max(n, 1) for k, v in sums.items()},
-            val_delta_rmse=val_sum["delta_rmse"], val_delta_pearson=val_sum["delta_pearson"])
-        if val_sum["delta_rmse"] < best[0]:
-            best = (val_sum["delta_rmse"], epoch)
+            val_delta_rmse=val_sum["delta_rmse"], val_delta_pearson=val_sum["delta_pearson"],
+            **{f"val_{k}": v for k, v in vr.items()})
+        crit = -vr["id_pct"] if (cfg.selection == "retrieval" and vr) else val_sum["delta_rmse"]
+        if crit < best[0]:
+            best = (crit, epoch)
             best_val_preds = val_preds
-            tr.save(ckpt_path, {"epoch": epoch, "val": val_sum})
-            log("checkpoint", epoch=epoch, val_delta_rmse=best[0])
+            best_val_retr = vr
+            best_val_sum = val_sum
+            tr.save(ckpt_path, {"epoch": epoch, "val": val_sum, "val_retrieval": vr})
+            log("checkpoint", epoch=epoch, val_delta_rmse=val_sum["delta_rmse"], **{f"val_{k}": v for k, v in vr.items()})
             commit()
         elapsed = time.time() - t_start
         if epoch + 1 < cfg.epochs and elapsed + ep_s + reserve_s > budget_s:
@@ -605,7 +668,9 @@ def run_training(ds: Dataset, ckpt_dir: str, cfg: TrainConfig, run_dir: str, com
         "checkpoint": ("public scGPT_human" if cfg.default_ckpt else cfg.ckpt)
                       + " -> fine-tuned; selected epoch %d" % best[1],
         "split_hash": ds.manifest["split_hash"], "manifest_sha": ds.manifest["h5ad_sha256"],
-        "epochs_completed": epochs_done, "selected_epoch": best[1], "val_delta_rmse_selected": best[0],
+        "epochs_completed": epochs_done, "selected_epoch": best[1],
+        "val_delta_rmse_selected": best_val_sum.get("delta_rmse"), "selection": cfg.selection,
+        "val_retrieval_selected": best_val_retr,
         "test": test_sum, "test_percell": pc_sum, "elapsed_seconds": time.time() - t_start,
         "peak_gpu_mem_gb": torch.cuda.max_memory_allocated() / 1e9,
         "reload_max_abs_diff": reload_diff, "reload_tolerance": 1e-3, "reload_ok": reload_diff <= 1e-3,
@@ -624,6 +689,8 @@ def run_training(ds: Dataset, ckpt_dir: str, cfg: TrainConfig, run_dir: str, com
     _write(run_dir, "metrics.json", metrics)
     _write_rows(os.path.join(run_dir, "per_intervention.csv"), test_rows)
     _write_rows(os.path.join(run_dir, "per_intervention_percell.csv"), pc_rows)
+    np.savez_compressed(os.path.join(run_dir, "val_predictions.npz"),
+                        conditions=np.array(list(best_val_preds)), preds=np.stack(list(best_val_preds.values())))
     np.savez_compressed(os.path.join(run_dir, "test_predictions.npz"),
                         conditions=np.array(list(test_preds)), preds=np.stack(list(test_preds.values())))
     _write(run_dir, "status.json", {"status": status, "finished_unix": time.time()})

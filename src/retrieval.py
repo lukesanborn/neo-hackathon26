@@ -8,11 +8,14 @@ Per test gene i (P, T: predicted / true deltas of the n test genes; R: true delt
   ref_p@5       |top-5 of R by P_i ∩ top-5 of R by T_i| / 5
   id_hit        1 if T_i is the closest (cosine) true test delta to P_i, else 0  (rank ties averaged)
   id_rank       rank of T_i among all n true test deltas by cosine to P_i (1 = best)
-Inverse identification (the CRISPR-target use case: "given an OBSERVED response, which knockdown caused
-it?"), per observed test gene j, candidates = the predicted responses of all n test genes:
+  id_pct        PRIMARY metric: identification percentile = 1 - (id_rank - 1) / (n - 1)  (1 = best, 0.5 = chance)
+  id_top3       1 if id_rank <= 3 (secondary, alongside id_hit = top-1)
+  id_top10      1 if id_rank <= 10 (secondary; meaningful with ~100 held-out genes)
+Inverse identification (X1/X2; "given an OBSERVED response, which knockdown caused it?"), per observed test
+gene j, candidates = the predicted responses of all n test genes:
   inv_hit1 / inv_hit5 / inv_rr   T_j's own gene ranks 1st / in top 5 / reciprocal rank, by cosine(P_i, T_j)
   cinv_*                         the same after subtracting ``mu`` (mean TRAINING-perturbation delta) from
-                                 both sides, i.e. with the generic response shared by all knockdowns removed
+                                 both sides (the generic response shared by all knockdowns removed)
 cluster_agreement is one number per prediction set: Pearson between the upper triangles of the
 cosine-similarity matrices of P and of T over the test genes.
 """
@@ -21,12 +24,13 @@ import re
 import numpy as np
 
 INV = ("inv_hit1", "inv_hit5", "inv_rr", "cinv_hit1", "cinv_hit5", "cinv_rr")
-PER_GENE = ("ref_spearman", "ref_p@5", "id_hit", "id_rank") + INV
+PER_GENE = ("ref_spearman", "ref_p@5", "id_hit", "id_rank", "id_pct", "id_top3", "id_top10") + INV
 # reported metric name -> per-gene key whose mean it is
 MEAN_OF = {"ref_spearman": "ref_spearman", "ref_p@5": "ref_p@5", "id_top1": "id_hit", "id_mean_rank": "id_rank",
+           "id_pct": "id_pct", "id_top3": "id_top3", "id_top10": "id_top10",
            "inv_top1": "inv_hit1", "inv_top5": "inv_hit5", "inv_mrr": "inv_rr",
            "cinv_top1": "cinv_hit1", "cinv_top5": "cinv_hit5", "cinv_mrr": "cinv_rr"}
-METRICS = ("ref_spearman", "ref_p@5", "cluster_agreement", "id_top1", "id_mean_rank",
+METRICS = ("id_pct", "id_top1", "id_top3", "id_top10", "id_mean_rank", "ref_spearman", "ref_p@5", "cluster_agreement",
            "inv_top1", "inv_top5", "inv_mrr", "cinv_top1", "cinv_top5", "cinv_mrr")
 
 
@@ -51,8 +55,7 @@ def unit(A):
 
 
 def per_gene_scores(P, T, R, mu=None):
-    """Returns ({per-gene key: (n,) array}, S_pred (n,n) cosine-sim matrix of predictions).
-    mu: mean training delta for the centred inverse metrics (default: mean of R)."""
+    """Returns ({per-gene key: (n,) array}, S_pred (n,n) cosine-sim matrix of predictions)."""
     from scipy.stats import rankdata, spearmanr
 
     Pu, Tu, Ru = unit(P), unit(T), unit(R)
@@ -65,12 +68,33 @@ def per_gene_scores(P, T, R, mu=None):
         p5[i] = len(set(np.argsort(-a)[:5]) & set(np.argsort(-b)[:5])) / 5
     S = Pu @ Tu.T                                         # prediction i vs true j
     ranks = np.array([rankdata(-S[i])[i] for i in range(n)], dtype=np.float64)
+    pct = 1.0 - (ranks - 1.0) / max(n - 1, 1)
+    out = {"ref_spearman": sp, "ref_p@5": p5, "id_hit": (ranks == 1).astype(np.float64), "id_rank": ranks,
+           "id_pct": pct, "id_top3": (ranks <= 3).astype(np.float64), "id_top10": (ranks <= 10).astype(np.float64)}
     mu = np.asarray(R, dtype=np.float64).mean(0) if mu is None else np.asarray(mu, dtype=np.float64)
-    inv, cinv = inverse_id(P, T), inverse_id(np.asarray(P) - mu, np.asarray(T) - mu)
-    out = {"ref_spearman": sp, "ref_p@5": p5, "id_hit": (ranks == 1).astype(np.float64), "id_rank": ranks}
-    out.update({f"inv_{k}": v for k, v in inv.items()})
-    out.update({f"cinv_{k}": v for k, v in cinv.items()})
+    out.update({f"inv_{k}": v for k, v in inverse_id(P, T).items()})
+    out.update({f"cinv_{k}": v for k, v in inverse_id(np.asarray(P) - mu, np.asarray(T) - mu).items()})
     return out, Pu @ Pu.T
+
+
+def id_scores(P, T):
+    """Identification-only summary (no reference set needed): mean id_pct, id_top1, id_top3, id_mean_rank.
+    P, T: (n, g) predicted / true deltas of the same n conditions, same gene panel. Used for checkpoint
+    selection on validation conditions during training."""
+    from scipy.stats import rankdata
+
+    Pu, Tu = unit(P), unit(T)
+    n = len(Pu)
+    S = Pu @ Tu.T
+    r = np.array([rankdata(-S[i])[i] for i in range(n)], dtype=np.float64)
+    return {"id_pct": float(np.mean(1.0 - (r - 1.0) / max(n - 1, 1))), "id_top1": float(np.mean(r == 1)),
+            "id_top3": float(np.mean(r <= 3)), "id_top10": float(np.mean(r <= 10)),
+            "id_mean_rank": float(np.mean(r)), "n": n}
+
+
+def panel_genes(R, n: int = 500) -> np.ndarray:
+    """Gene panel: the n genes with the largest variance of TRAINING-perturbation deltas (no held-out info)."""
+    return np.argsort(-np.asarray(R).var(0))[:n]
 
 
 def true_sim(T):
@@ -106,7 +130,7 @@ def _nanmean(x, axis=None):
 
 def aggregate(pg, clus):
     """Old-style aggregate dict for one prediction set (or one seed-pooled arm)."""
-    out = {m: float(_nanmean(pg[k])) if k in pg else float("nan") for m, k in MEAN_OF.items()}
+    out = {m: float(_nanmean(pg[k])) for m, k in MEAN_OF.items()}
     out["cluster_agreement"] = float(clus)
     out["n_test"] = int(len(pg["id_rank"]))
     return out
@@ -145,9 +169,8 @@ def pool_seeds(sets):
         a["S_pred"].append(np.asarray(sets[name]["S_pred"]))
     for a in arms.values():
         pgs = a.pop("_pg")
-        n = len(next(iter(pgs[0].values())))
-        nan = np.full(n, np.nan)   # per-gene dicts from older code lack the inverse metrics
-        a["per_gene"] = {k: _nanmean(np.stack([p.get(k, nan) for p in pgs]), axis=0) for k in PER_GENE}
+        a["per_gene"] = {k: _nanmean(np.stack([p[k] for p in pgs]), axis=0) for k in PER_GENE
+                         if all(k in p for p in pgs)}
     return arms
 
 
