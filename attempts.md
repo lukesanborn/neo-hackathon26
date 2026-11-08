@@ -553,7 +553,29 @@ All runs select their checkpoint by validation ID percentile. Experiment `replog
 - **Metric decision (user, Nov 7):** ID percentile stays the single primary metric. Top-1, top-3 and **top-10** (added now that n = 103) are secondary.
 - **Confound to note:** public scGPT runs use log1p inputs (as in all earlier public runs), while the blood checkpoints use bins50 (as pretrained). So blood-vs-public mixes pretraining and input format. The key comparison, blood-JEPA vs blood-scGPT, is fully matched.
 
-*Results pending.*
+**Partial results (19:45; scGPT-recipe runs only, 12 of 24 done).** Validation split, 31 genes; chance: ID percentile 0.5, top-1 0.032, top-3 0.097, top-10 0.32. Mean [95% CI]; "2-seed ens" = the two seeds' predictions averaged. Source: `diag/results/A25_val_partial_retrieval_ci.md`.
+
+| Starting point → scGPT fine-tune | Contrastive loss | ID percentile | Top-1 | Top-3 | Top-10 |
+|---|---|---|---|---|---|
+| public scGPT | off | 0.697 [0.59, 0.80] | 0.226 | 0.452 | 0.581 |
+| public scGPT | **on** | 0.774 [0.69, 0.86] | 0.339 | 0.468 | 0.677 |
+| blood-scGPT | off | 0.746 [0.65, 0.84] | 0.290 | 0.403 | 0.694 |
+| blood-scGPT | on | 0.769 [0.68, 0.85] | 0.258 | 0.419 | 0.677 |
+| **blood-JEPA** | off | 0.744 [0.65, 0.84] | 0.306 | 0.452 | 0.694 |
+| **blood-JEPA** | on | 0.774 [0.70, 0.85] | 0.258 | 0.403 | 0.710 |
+| blood-JEPA, on, 2-seed ens | on | **0.805** [0.72, 0.88] | 0.355 | 0.452 | 0.710 |
+| public, on, 2-seed ens | on | 0.795 [0.70, 0.88] | 0.355 | 0.548 | 0.710 |
+| scGPT gene vectors only (ridge)* | – | 0.676 [0.56, 0.78] | 0.065 | 0.290 | 0.645 |
+
+\*The gene-vector baselines choose their one setting on these same validation genes, so their validation numbers are slightly optimistic.
+
+- **Blood-JEPA vs blood-scGPT: tied** (0.744 vs 0.746 without the contrastive loss; 0.774 vs 0.769 with it). JEPA continued pretraining does not change retrieval at this resolution.
+- **The contrastive loss is the clearest lever for public scGPT** (+0.08). For the blood checkpoints it adds +0.02–0.03.
+- **Blood pretraining helps without the contrastive loss** (+0.05 over public); with it, all three starting points tie (~0.77).
+- 2-seed ensembles add ~+0.02–0.03.
+- 31 genes give wide CIs (±0.08–0.10). No difference between deep configs is resolved yet.
+
+*Cell-JEPA-recipe half pending.*
 
 ## Literature context (for the write-up)
 
