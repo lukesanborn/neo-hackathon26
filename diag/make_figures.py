@@ -67,56 +67,91 @@ FOOT = ("Replogle K562 essential, 103 held-out test knockdowns (GEARS split d423
         "model or setting choice. Whiskers/bands = 95% paired bootstrap CI over genes.")
 
 # =============================================================================== Fig 1
-models = [("PCA linear baseline", "baselines/linear", GRAY),
-          ("scGPT gene vectors\n(no model)", "baselines/ridge_scgpt_gene_emb", PURPLE),
-          ("Our model", BEST, TEAL)]
-fig = plt.figure(figsize=(15, 6.6), facecolor=BG)
-title(fig, "Our model identifies the knocked-down gene far better than PCA",
-      "Given an unseen knockdown's measured response, rank all 103 candidate genes. Where does the true gene land?")
-axA = fig.add_axes([0.13, 0.15, 0.36, 0.62])
-axB = fig.add_axes([0.585, 0.15, 0.3, 0.62])
+# Equal effort: PCA linear baseline vs PLAIN fine-tuned public scGPT (A22: standard scGPT recipe, log1p, checkpoint
+# chosen by delta RMSE, no retrieval loss, no ensemble, no identification tuning). Our extras shown separately.
+PLAIN = "scgpt_paper_public"
+fig = plt.figure(figsize=(18, 7.4), facecolor=BG)
+title(fig, "Fine-tuned scGPT identifies the knocked-down gene far better than PCA",
+      "Equal effort: the standard scGPT fine-tune vs the standard PCA baseline. Rank all 103 candidate genes for an "
+      "unseen knockdown; where does the true gene land?")
+axA = fig.add_axes([0.09, 0.17, 0.21, 0.58])
+axB = fig.add_axes([0.37, 0.17, 0.26, 0.58])
+axC = fig.add_axes([0.81, 0.17, 0.155, 0.58])
 
+# --- A: equal-effort bars
 style(axA)
-ys = np.arange(len(models))[::-1]
-for y, (lab, arm, col) in zip(ys, models):
+pair = [("PCA linear\nbaseline", "baselines/linear", GRAY), ("scGPT,\nfine-tuned", PLAIN, TEAL)]
+ys = np.array([1, 0])
+for y, (lab, arm, col) in zip(ys, pair):
     m, lo, hi = ci_mean(pg(arm))
-    axA.barh(y, m - 0.5, left=0.5, height=0.58, color=col, edgecolor=BG, lw=2)
+    axA.barh(y, m - 0.5, left=0.5, height=0.55, color=col, edgecolor=BG, lw=2)
     axA.errorbar(m, y, xerr=[[m - lo], [hi - m]], fmt="none", ecolor=INK, elinewidth=1.3, capsize=5)
-    axA.text(hi + 0.008, y, f"{m:.2f}", va="center", fontsize=15, fontweight="bold" if col == TEAL else "normal",
-             color=INK)
+    axA.text(hi + 0.008, y, f"{m:.2f}", va="center", fontsize=16, color=INK,
+             fontweight="bold" if col == TEAL else "normal")
 axA.set_yticks(ys)
-axA.set_yticklabels([m[0] for m in models], fontsize=13, color=INK)
-axA.set_xlim(0.5, 0.9)
-axA.set_xticks([0.5, 0.6, 0.7, 0.8, 0.9])
-axA.set_xticklabels(["0.5\nchance", "0.6", "0.7", "0.8", "0.9"])
-axA.set_title("ID percentile  (1 = true gene ranked first)", fontsize=13, color=INK, loc="left", pad=12)
-d, lo, hi = ci_mean(pg(BEST) - pg("baselines/linear"))
-axA.text(0.5, -0.75, f"Our model − PCA: +{d:.2f}  [95% CI +{lo:.2f}, +{hi:.2f}]", fontsize=12, color=TEAL,
-         fontweight="bold", transform=axA.get_yaxis_transform())
+axA.set_yticklabels([p_[0] for p_ in pair], fontsize=13, color=INK)
+axA.set_xlim(0.5, 0.82)
+axA.set_ylim(-0.6, 2.3)
+axA.set_xticks([0.5, 0.6, 0.7, 0.8])
+axA.set_xticklabels(["0.5\nchance", "0.6", "0.7", "0.8"])
+axA.set_title("A. ID percentile\n(1 = true gene ranked first)", fontsize=13, color=INK, loc="left", pad=10)
+d, lo, hi = ci_mean(pg(PLAIN) - pg("baselines/linear"))
+axA.text(0.505, 2.0, f"scGPT − PCA: +{d:.2f}", fontsize=15, color=TEAL, fontweight="bold")
+axA.text(0.505, 1.72, f"95% CI +{lo:.2f} to +{hi:.2f}; scGPT ranks the true gene\nhigher than PCA on "
+         f"{np.mean(pg(PLAIN) > pg('baselines/linear')):.0%} of the 103 genes", fontsize=10.5, color=MUTED, va="top")
 
+# --- B: shortlist curve, equal effort (+ faint full model for reference)
 style(axB, "both")
 ks = np.arange(1, 31)
 axB.plot(ks, ks / N, color=GRAY_LIGHT, lw=2, ls=(0, (4, 3)))
 axB.text(22, 22 / N - 0.045, "chance", color=MUTED, fontsize=10.5, ha="center", rotation=12)
-for lab, arm, col in models:
+curves = {}
+for lab, arm, col, kw in (("PCA baseline", "baselines/linear", GRAY, {}),
+                          ("scGPT, fine-tuned", PLAIN, TEAL, {}),
+                          ("+ our extras (panel C)", BEST, TEAL, {"ls": (0, (1.5, 1.5)), "alpha": 0.7})):
     r = pg(arm, "id_rank")
     curve = np.array([(r <= k).mean() for k in ks])
-    band = np.array([[(r[i] <= k).mean() for k in ks] for i in IDX[:1000]])
-    axB.fill_between(ks, np.quantile(band, 0.025, 0), np.quantile(band, 0.975, 0), color=col, alpha=0.12, lw=0)
-    axB.plot(ks, curve, color=col, lw=2.6 if col == TEAL else 2)
-    axB.text(30.6, curve[-1], lab.split("\n")[0], color=col, fontsize=11, va="center", fontweight="bold")
-for arm, col in ((BEST, TEAL), ("baselines/linear", GRAY)):
-    v = (pg(arm, "id_rank") <= 10).mean()
+    curves[arm] = curve
+    if arm != BEST:
+        band = np.array([[(r[i] <= k).mean() for k in ks] for i in IDX[:1000]])
+        axB.fill_between(ks, np.quantile(band, 0.025, 0), np.quantile(band, 0.975, 0), color=col, alpha=0.12, lw=0)
+    axB.plot(ks, curve, color=col, lw=2.6 if arm == PLAIN else 2, **kw)
+    axB.lines[-1].set_label(lab)
+for arm, col, dy in ((PLAIN, TEAL, 0.035), ("baselines/linear", GRAY, -0.06)):
+    v = curves[arm][9]
     axB.plot([10], [v], "o", ms=8, color=col, mec=BG, mew=2, zorder=5)
-    axB.text(10.6, v + (0.03 if col == TEAL else -0.055), f"{v:.0%}", color=col, fontsize=14, fontweight="bold")
+    axB.text(10.6, v + dy, f"{v:.0%}", color=col, fontsize=14, fontweight="bold")
 axB.axvline(10, color=GRID, lw=1.2)
+axB.legend(loc="upper left", frameon=False, fontsize=11, handlelength=2.2)
 axB.set_xlim(1, 30)
 axB.set_ylim(0, 0.8)
 axB.set_yticks([0, 0.2, 0.4, 0.6, 0.8])
 axB.set_yticklabels(["0%", "20%", "40%", "60%", "80%"])
 axB.set_xlabel("Shortlist size (top-k of 103 candidates)", fontsize=11.5, color=MUTED)
-axB.set_title("True gene is on the shortlist", fontsize=13, color=INK, loc="left", pad=12)
-footer(fig, FOOT + "  Our model = blood-adapted scGPT + contrastive retrieval loss, 2-seed ensemble.")
+axB.set_title("B. True gene is on the shortlist", fontsize=13, color=INK, loc="left", pad=10)
+
+# --- C: what our extras add on top (applied only to our model, so shown separately)
+style(axC)
+extras = [("Fine-tuned scGPT\n(panel A)", PLAIN),
+          ("+ checkpoint picked\nby validation ID", "scgpt_paper_s2pub_r0"),
+          ("+ contrastive\nretrieval loss", "scgpt_paper_s2pub_r1"),
+          ("+ blood pretraining", "scgpt_paper_s2bscgpt_r1"),
+          ("+ average 2 seeds", BEST)]
+ev = [pg(a).mean() for _, a in extras]
+ycs = np.arange(len(extras))[::-1]
+for i, (y, (lab, arm)) in enumerate(zip(ycs, extras)):
+    col = TEAL if i == 0 else TEAL_TINT
+    axC.barh(y, ev[i] - 0.5, left=0.5, height=0.6, color=col, edgecolor=TEAL, lw=0 if i == 0 else 1.4)
+    txt = f"{ev[i]:.3f}" if i == 0 else f"{ev[i]:.3f}  ({ev[i] - ev[i - 1]:+.3f})"
+    axC.text(ev[i] + 0.005, y, txt, va="center", fontsize=11, color=INK, fontweight="bold" if i in (0, 4) else "normal")
+axC.set_yticks(ycs)
+axC.set_yticklabels([e[0] for e in extras], fontsize=11, color=INK)
+axC.set_xlim(0.5, 0.95)
+axC.set_xticks([0.5, 0.6, 0.7, 0.8])
+axC.set_xticklabels(["0.5", "0.6", "0.7", "0.8"])
+axC.set_title("C. Extras we added on top\n(not applied to PCA)", fontsize=13, color=INK, loc="left", pad=10)
+footer(fig, FOOT + "  Fine-tuned scGPT = public scGPT_human, standard scGPT fine-tune (MSE + ECS), checkpoint chosen "
+       "by RMSE, mean of 2 seeds. Panel C steps are cumulative, applied to our model only.")
 fig.savefig("diag/results/fig1_beat_pca.png", dpi=200)
 plt.close(fig)
 
