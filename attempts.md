@@ -502,6 +502,21 @@ Goal of the scoped program: on Replogle's 103 held-out genes, find the setup tha
 | public scGPT → Cell-JEPA FT − Baseline: linear (PCA) | +0.146 [+0.11, +0.19] | +0.112 [+0.06, +0.17] | +0.131 [+0.08, +0.19] | +0.058 [+0.02, +0.10] |
 | public scGPT → Cell-JEPA FT − scGPT gene vectors only (ridge) | +0.013 [-0.04, +0.07] | +0.102 [+0.04, +0.17] | +0.112 [+0.03, +0.19] | +0.153 [+0.09, +0.22] |
 
+**Top-10 (added after the fact; chance = 10/103 = 0.097):**
+
+| Predictions | Top-10 ↑ [95% CI] | vs Baseline: linear (PCA) | vs scGPT gene vectors only (ridge) |
+|---|---|---|---|
+| public scGPT → Cell-JEPA fine-tune | **0.374** [0.29, 0.46] | +0.218 [+0.13, +0.31] | +0.092 [−0.01, +0.20] |
+| public scGPT → scGPT fine-tune | 0.330 [0.25, 0.41] | +0.175 [+0.10, +0.26] | +0.049 [−0.06, +0.16] |
+| kidney scGPT → scGPT fine-tune | 0.228 [0.16, 0.30] | | |
+| kidney JEPA → Cell-JEPA fine-tune | 0.184 [0.13, 0.25] | | |
+| scGPT gene vectors only, no model (ridge) | 0.282 [0.20, 0.38] | | |
+| scGPT gene vectors only, no model (kNN) | 0.272 [0.19, 0.36] | | |
+| **Baseline: linear (PCA gene embedding)** | 0.155 [0.09, 0.22] | | |
+| Training mean | 0.097 [0.05, 0.16] | | |
+
+At top-10, the advantage of the models over the gene-vector reference shrinks (CIs touch 0), and the Cell-JEPA fine-tune is nominally best (0.374). The "precision at the very top" result is strongest at top-1/top-3.
+
 **Conclusions:**
 1. **The fine-tuned public-scGPT models clearly beat the standard baseline** (linear, PCA gene embedding) on ID percentile (+0.14), top-1, and top-3. Every CI excludes 0. With 103 genes, the Adamson trend (A16/A17) is confirmed.
 2. **scGPT's gene vectors alone (no model) already reach the same ID percentile** as the fine-tuned models (0.675 vs 0.68–0.69; difference ≈ 0). But the fine-tuned models put the right gene **first 6–7× more often** (top-1 0.12–0.14 vs 0.02) and in the **top 3 about 3× more often**. They also rank similar measured knockdowns much better (+0.15 neighbour Spearman). All of these CIs exclude 0. **The value the full model adds is precision at the top of the list,** which is what a shortlist-style selection tool needs.
@@ -525,6 +540,20 @@ Note: the experiment folder also contains single-seed `celljepa_mk_*` runs we di
 - **Both trained cleanly. JEPA `center` did not collapse:** teacher spread rose slightly (0.027 → 0.031), and the centred target stayed at ~0.041. This is the same healthy behaviour as the A19 pilot.
 - JEPA reconstructs a little worse (10.25 vs 9.13), the expected cost of the extra objective (as in A9/A19). Both are far below public scGPT's starting point on kidney (~82 at step 0; different corpus, so only indicative).
 - Checkpoints: `trackA/checkpoints/scgpt_kidney_blood_lr3e5` and `trackA/checkpoints/jepa_kidney_blood_lr3e5`. The `_kidney` in the name is only the export-naming convention; the tag marks the blood corpus.
+
+## A25. Step 2 screen on Replogle: launched (Nov 7, ~19:05)
+
+`diag/launch_step2_screen.py`, 24 runs, call ids in `diag/call_ids_A25.json`. Factors:
+- starting point {public scGPT, blood-scGPT, blood-JEPA `center`}
+- fine-tune recipe {scGPT, Cell-JEPA}
+- contrastive retrieval loss {off, on (weight 1)}
+- seeds {1, 2}
+
+All runs select their checkpoint by validation ID percentile. Experiment `replogle_k562_v1`; run dirs `<method>_s<seed>_s2<start>_r<0|1>`. Configs are compared on the **31 validation genes only**; the test split is scored in Step 3.
+- **Metric decision (user, Nov 7):** ID percentile stays the single primary metric. Top-1, top-3 and **top-10** (added now that n = 103) are secondary.
+- **Confound to note:** public scGPT runs use log1p inputs (as in all earlier public runs), while the blood checkpoints use bins50 (as pretrained). So blood-vs-public mixes pretraining and input format. The key comparison, blood-JEPA vs blood-scGPT, is fully matched.
+
+*Results pending.*
 
 ## Literature context (for the write-up)
 

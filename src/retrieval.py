@@ -10,6 +10,7 @@ Per test gene i (P, T: predicted / true deltas of the n test genes; R: true delt
   id_rank       rank of T_i among all n true test deltas by cosine to P_i (1 = best)
   id_pct        PRIMARY metric: identification percentile = 1 - (id_rank - 1) / (n - 1)  (1 = best, 0.5 = chance)
   id_top3       1 if id_rank <= 3 (secondary, alongside id_hit = top-1)
+  id_top10      1 if id_rank <= 10 (secondary; meaningful with ~100 held-out genes)
 cluster_agreement is one number per prediction set: Pearson between the upper triangles of the
 cosine-similarity matrices of P and of T over the test genes.
 """
@@ -17,11 +18,11 @@ import re
 
 import numpy as np
 
-PER_GENE = ("ref_spearman", "ref_p@5", "id_hit", "id_rank", "id_pct", "id_top3")
+PER_GENE = ("ref_spearman", "ref_p@5", "id_hit", "id_rank", "id_pct", "id_top3", "id_top10")
 # reported metric name -> per-gene key whose mean it is
 MEAN_OF = {"ref_spearman": "ref_spearman", "ref_p@5": "ref_p@5", "id_top1": "id_hit", "id_mean_rank": "id_rank",
-           "id_pct": "id_pct", "id_top3": "id_top3"}
-METRICS = ("id_pct", "id_top1", "id_top3", "id_mean_rank", "ref_spearman", "ref_p@5", "cluster_agreement")
+           "id_pct": "id_pct", "id_top3": "id_top3", "id_top10": "id_top10"}
+METRICS = ("id_pct", "id_top1", "id_top3", "id_top10", "id_mean_rank", "ref_spearman", "ref_p@5", "cluster_agreement")
 
 
 def unit(A):
@@ -45,7 +46,8 @@ def per_gene_scores(P, T, R):
     ranks = np.array([rankdata(-S[i])[i] for i in range(n)], dtype=np.float64)
     pct = 1.0 - (ranks - 1.0) / max(n - 1, 1)
     return {"ref_spearman": sp, "ref_p@5": p5, "id_hit": (ranks == 1).astype(np.float64), "id_rank": ranks,
-            "id_pct": pct, "id_top3": (ranks <= 3).astype(np.float64)}, Pu @ Pu.T
+            "id_pct": pct, "id_top3": (ranks <= 3).astype(np.float64),
+            "id_top10": (ranks <= 10).astype(np.float64)}, Pu @ Pu.T
 
 
 def id_scores(P, T):
@@ -59,7 +61,8 @@ def id_scores(P, T):
     S = Pu @ Tu.T
     r = np.array([rankdata(-S[i])[i] for i in range(n)], dtype=np.float64)
     return {"id_pct": float(np.mean(1.0 - (r - 1.0) / max(n - 1, 1))), "id_top1": float(np.mean(r == 1)),
-            "id_top3": float(np.mean(r <= 3)), "id_mean_rank": float(np.mean(r)), "n": n}
+            "id_top3": float(np.mean(r <= 3)), "id_top10": float(np.mean(r <= 10)),
+            "id_mean_rank": float(np.mean(r)), "n": n}
 
 
 def panel_genes(R, n: int = 500) -> np.ndarray:

@@ -107,7 +107,7 @@ def test_id_pct_top3_and_id_scores():
     pg, _ = RT.per_gene_scores(T.copy(), T, rng.normal(size=(5, 30)))
     assert np.allclose(pg["id_pct"], 1) and np.allclose(pg["id_top3"], 1)       # perfect predictions
     s = RT.id_scores(T.copy(), T)
-    assert s["id_pct"] == 1 and s["id_top1"] == 1 and s["id_top3"] == 1 and s["id_mean_rank"] == 1
+    assert s["id_pct"] == 1 and s["id_top1"] == 1 and s["id_top3"] == 1 and s["id_top10"] == 1 and s["id_mean_rank"] == 1
     rev = RT.id_scores(-T, T)                                                   # anti-correlated -> worst
     assert rev["id_pct"] < 0.3
     P = np.roll(T, 1, axis=0)                                                   # every prediction matches another gene
