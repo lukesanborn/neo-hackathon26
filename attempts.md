@@ -379,7 +379,7 @@ Key paired differences, diff [95% CI] (fraction of resamples > 0):
 
 ## A18. Continued pretraining from public scGPT: code + smoke test (Nov 7)
 
-New `PretrainConfig.init_ckpt` (merged from `worker/init-ckpt`). It loads public scGPT_human weights (159 keys: encoder, value_encoder, transformer_encoder, decoder) into the student before training. The JEPA teacher is a copy of the loaded student. Both objectives start from the identical init hash `4aba96aff0547947`. There is a `--cache` override to pretrain on another corpus.
+New `PretrainConfig.init_ck pt` (merged from `worker/init-ckpt`). It loads public scGPT_human weights (159 keys: encoder, value_encoder, transformer_encoder, decoder) into the student before training. The JEPA teacher is a copy of the loaded student. Both objectives start from the identical init hash `4aba96aff0547947`. There is a `--cache` override to pretrain on another corpus.
 
 B300 smoke on the kidney cache (bs 32, lr 3e-5, 20 warmup + 200 steps), results in `/vol/trackA/pretrain_pilot/B300_scgpt_human_init.json`:
 
@@ -454,6 +454,23 @@ Merged from the Unit 3 branch. `/vol/trackA/blood_marrow_census_2023-05-15_2M`, 
 - **Data:** 25 shards; split 1,980,000 train / 20,000 val. Mean 1,438 expressed genes per cell (median 1,259; 88% > 600). 100% of genes in the scGPT vocab. RAM to load: ~14.4 GB (the pretrain container has 64 GB).
 - **Leakage check for the PBMC-10K evaluation data** (10x pbmc4k/pbmc8k): no matching dataset by title/collection, nothing excluded. 17 broader PBMC/10x datasets were reviewed and kept (listed in the manifest). Limitation: this is a text-based screen only.
 - **Build:** ~6 min (8 parallel shard containers). Kidney corpus defaults are unchanged and pinned by a test.
+
+## A24. Step 0: retrieval-focused training and scoring options (Nov 7)
+
+Goal of the scoped program: on Replogle's 103 held-out genes, find the setup that best identifies an untested gene's response, and test whether JEPA is what helps. Selection uses validation genes only; the test set is scored once.
+- **Primary metric:** identification percentile `id_pct` (1 = own gene ranked first, 0.5 = chance). Secondary: top-1, top-3, mean rank, neighbour Spearman/p@5, cluster agreement.
+- **Training (`src/train.py`), defaults unchanged:**
+  - `selection="retrieval"` picks the epoch with the best validation `id_pct` (500-gene panel from training deltas). Validation `id_pct`/top-1/top-3 are now logged every epoch for every run.
+  - `retr_weight>0` adds an InfoNCE loss: each perturbed training cell's predicted delta must be closest to its *own* training perturbation's mean delta (training conditions only).
+  - `val_predictions.npz` is saved. Modal `train*` functions accept `cfg_overrides`.
+- **Scoring (`diag/retrieval.py`):** `--split val|test`; seed ensembles (average of predicted deltas, `<arm>__ensN`); two stronger baselines from scGPT_human gene embeddings (ridge, kNN; hyperparameter chosen on validation): `src/retrieval_baselines.py`.
+- **Check on Adamson** (existing runs, test split, 22 genes; `diag/results/A24_adamson_check_*`). id_pct / top-1 / top-3:
+  - public scGPT → Cell-JEPA FT: single seeds 0.639 / 0.205 / 0.341; **2-seed ensemble 0.639 / 0.273 / 0.409**
+  - public scGPT → scGPT+ECS FT: 0.611 / 0.227 / 0.364; ensemble 0.630 / 0.273 / 0.455
+  - **new ridge-on-gene-embedding baseline:** 0.604 / 0.045 / 0.227 (stronger than linear's 0.574 on id_pct)
+  - linear 0.574 / 0.091 / 0.182; training mean 0.500 (chance)
+  - kidney arms ≈ chance on id_pct (0.49–0.55)
+- **Takeaways:** ensembling helps top-1/top-3. The new ridge baseline is a tougher competitor. Kidney checkpoints carry little gene-specific signal.
 
 ## Literature context (for the write-up)
 

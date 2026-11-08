@@ -46,7 +46,9 @@ PAIRS = [
 
 
 @app.function(image=image, volumes={"/vol": vol}, cpu=4, memory=16384, timeout=1800)
-def run(cache: str, exps: list) -> dict:
+def run(cache: str, exps: list, split: str = "test") -> dict:
+    """split="test": score test_predictions.npz (final evaluation, once). split="val": score
+    val_predictions.npz of the selected checkpoint (for choosing configs; never look at test for that)."""
     import numpy as np
 
     from src import retrieval as RT
@@ -57,7 +59,8 @@ def run(cache: str, exps: list) -> dict:
     ctrl = np.asarray(ds.X[np.flatnonzero(cond == CTRL)]).mean(0)
     mean_of = lambda c: np.asarray(ds.X[np.flatnonzero(cond == c)]).mean(0)  # noqa: E731
     train = [c for c in ds.split["train"] if c != CTRL]
-    test = list(ds.split["test"])
+    test = list(ds.split[split])           # the evaluated conditions ("test" name kept below)
+    pred_file = f"{split}_predictions.npz"
     R_all = np.stack([mean_of(c) - ctrl for c in train])
     genes = np.argsort(-R_all.var(0))[:N_GENES]
     R = R_all[:, genes]
@@ -72,7 +75,7 @@ def run(cache: str, exps: list) -> dict:
             if not os.path.isdir(d):
                 continue
             for r in sorted(os.listdir(d)):
-                path = os.path.join(d, r, "test_predictions.npz")
+                path = os.path.join(d, r, pred_file)
                 if not os.path.exists(path):
                     continue
                 z = np.load(path, allow_pickle=False)
@@ -91,6 +94,38 @@ def run(cache: str, exps: list) -> dict:
                     elif np.allclose(sets[short]["P"], P):
                         continue                   # identical copy in another experiment
                 sets[key] = {"per_gene": pg, "S_pred": S, "P": P}
+    # ---- seed ensembles: average the predicted deltas of all seeds of an arm, scored as one set ----
+    by_arm = {}
+    for k, v in sets.items():
+        if "/runs/" in k:
+            by_arm.setdefault(RT.arm_of(k), []).append(v["P"])
+    for arm, Ps in by_arm.items():
+        if len(Ps) >= 2:
+            Pm = np.mean(Ps, axis=0)
+            pg, S = RT.per_gene_scores(Pm, T, R)
+            sets[f"{arm}__ens{len(Ps)}"] = {"per_gene": pg, "S_pred": S, "P": Pm}
+    # ---- stronger baselines from scGPT_human gene embeddings (hyperparameter chosen on val) ----
+    emb_info = {}
+    try:
+        import torch
+
+        from src.data import target_gene
+        from src.models import SimpleVocab, gene_vocab_ids
+        from src.retrieval_baselines import select_and_predict
+
+        vocab = SimpleVocab("/vol/checkpoints/scGPT_human/vocab.json")
+        W_emb = torch.load("/vol/checkpoints/scGPT_human/best_model.pt", map_location="cpu")["encoder.embedding.weight"].numpy()
+        aliases = (ds.manifest or {}).get("extra_hgnc_aliases") or {}
+        emb_of = lambda cs: W_emb[gene_vocab_ids([target_gene(c) for c in cs], vocab, extra_aliases=aliases)[0]]  # noqa: E731
+        val = list(ds.split["val"])
+        T_val = np.stack([mean_of(c) - ctrl for c in val])[:, genes]
+        for kind in ("ridge", "knn"):
+            P, hp, sc = select_and_predict(emb_of(train), R, emb_of(val), T_val, emb_of(test), kind)
+            pg, S = RT.per_gene_scores(P, T, R)
+            sets[f"baselines/{kind}_scgpt_gene_emb"] = {"per_gene": pg, "S_pred": S, "P": P}
+            emb_info[kind] = {"chosen": hp, "val_id_pct": sc}
+    except Exception as e:                          # never let the extra baselines break the main scoring
+        emb_info["error"] = repr(e)[:300]
     pg_ub, S_ub = RT.per_gene_scores(T, T, R)
     sets[UPPER] = {"per_gene": pg_ub, "S_pred": S_ub}
 
@@ -101,10 +136,12 @@ def run(cache: str, exps: list) -> dict:
     # each deep arm vs linear: its own experiment's linear if that differs from the shared copy
     lin_of = lambda a: next((x for x in (f"{a.split('/')[0]}/{LINEAR}", LINEAR) if x in arms), None)  # noqa: E731
     pairs = [(a, lin_of(a)) for a in sorted(arms) if "/runs/" in a and lin_of(a)]
+    pairs += [(a, b) for a in sorted(arms) if "/runs/" in a
+              for b in ("baselines/ridge_scgpt_gene_emb", "baselines/knn_scgpt_gene_emb") if b in arms]
     pairs += [(a, b) for a, b in PAIRS if a in arms and b in arms]
     diffs = [{"a": a, "b": b, **RT.diff_ci(point, draws, a, b)} for a, b in pairs]
     return RT.json_safe({
-        "cache": cache, "exps": exps, "n_test": len(test), "n_ref": len(train), "n_genes": int(len(genes)),
+        "cache": cache, "exps": exps, "split": split, "embedding_baselines": emb_info, "n_test": len(test), "n_ref": len(train), "n_genes": int(len(genes)),
         "n_boot": N_BOOT, "boot_seed": 0, "test_conditions": test, "skipped": skipped, "metrics": list(RT.METRICS),
         "aggregates": agg,
         "set_per_gene": {s: d["per_gene"] for s, d in sets.items()},
@@ -183,8 +220,8 @@ def _ci_markdown(res, tag):
 
 
 @app.local_entrypoint()
-def main(cache: str = CACHE, exps: str = ",".join(EXPS), tag: str = "A17_adamson"):
-    res = run.remote(cache, [e for e in exps.split(",") if e])
+def main(cache: str = CACHE, exps: str = ",".join(EXPS), tag: str = "A17_adamson", split: str = "test"):
+    res = run.remote(cache, [e for e in exps.split(",") if e], split)
     os.makedirs("diag/results", exist_ok=True)
     with open(f"diag/results/{tag}_retrieval_ci.json", "w") as f:
         json.dump(res, f, indent=1, allow_nan=False)

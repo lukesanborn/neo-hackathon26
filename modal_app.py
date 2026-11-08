@@ -232,7 +232,8 @@ def pilot_blackwell(exp_id: str = DEFAULT_EXP, config_name: str = "blackwell_B30
 
 
 def _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt="scGPT_human",
-           input_transform="log1p", teacher_update="frozen", max_steps_per_epoch=0) -> dict:
+           input_transform="log1p", teacher_update="frozen", max_steps_per_epoch=0,
+           cfg_overrides: dict | None = None) -> dict:
     from src.data import load_cache
     from src.train import TrainConfig, run_training
 
@@ -240,7 +241,7 @@ def _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt="scG
     ds = load_cache(_exp_config(exp_id)["cache_dir"])
     cfg = TrainConfig(method=method, seed=seed, epochs=epochs, aux_weight=aux_weight, max_minutes=max_minutes,
                       ckpt=ckpt, input_transform=input_transform, teacher_update=teacher_update,
-                      max_steps_per_epoch=max_steps_per_epoch or None)
+                      max_steps_per_epoch=max_steps_per_epoch or None, **(cfg_overrides or {}))
     run_dir = os.path.join(exp_dir(exp_id), "runs", f"{method}_s{seed}_{tag}")
     if os.path.exists(os.path.join(run_dir, "metrics.json")):
         raise FileExistsError(f"{run_dir} already completed; runs are immutable — use a new tag")
@@ -251,11 +252,13 @@ def _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt="scG
               timeout=4 * 3600, max_containers=MAX_TRAIN_CONTAINERS)
 def train(exp_id: str, method: str, seed: int, epochs: int = 15, aux_weight: float = 0.5,
           max_minutes: float = 150.0, tag: str = "v1", ckpt: str = "scGPT_human",
-          input_transform: str = "log1p", teacher_update: str = "frozen", max_steps_per_epoch: int = 0) -> dict:
+          input_transform: str = "log1p", teacher_update: str = "frozen", max_steps_per_epoch: int = 0,
+          cfg_overrides: dict | None = None) -> dict:
     """ckpt: dir name under /vol/checkpoints/ or an absolute path; input_transform: log1p | bins50;
-    max_steps_per_epoch: 0 = full epochs (smoke tests only)."""
+    max_steps_per_epoch: 0 = full epochs (smoke tests only); cfg_overrides: extra TrainConfig fields
+    (e.g. {"selection": "retrieval", "retr_weight": 1.0})."""
     return _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt, input_transform,
-                  teacher_update, max_steps_per_epoch)
+                  teacher_update, max_steps_per_epoch, cfg_overrides)
 
 
 @gpu_function(image=blackwell_image, gpu=BLACKWELL_GPU, volumes={VOL_PATH: vol}, memory=65536,
@@ -263,9 +266,9 @@ def train(exp_id: str, method: str, seed: int, epochs: int = 15, aux_weight: flo
 def train_blackwell(exp_id: str, method: str, seed: int, epochs: int = 15, aux_weight: float = 0.5,
                     max_minutes: float = 150.0, tag: str = "v1", ckpt: str = "scGPT_human",
                     input_transform: str = "log1p", teacher_update: str = "frozen",
-                    max_steps_per_epoch: int = 0) -> dict:
+                    max_steps_per_epoch: int = 0, cfg_overrides: dict | None = None) -> dict:
     return _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt, input_transform,
-                  teacher_update, max_steps_per_epoch)
+                  teacher_update, max_steps_per_epoch, cfg_overrides)
 
 
 # =============================================================================== aggregate

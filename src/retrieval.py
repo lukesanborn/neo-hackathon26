@@ -8,6 +8,8 @@ Per test gene i (P, T: predicted / true deltas of the n test genes; R: true delt
   ref_p@5       |top-5 of R by P_i ∩ top-5 of R by T_i| / 5
   id_hit        1 if T_i is the closest (cosine) true test delta to P_i, else 0  (rank ties averaged)
   id_rank       rank of T_i among all n true test deltas by cosine to P_i (1 = best)
+  id_pct        PRIMARY metric: identification percentile = 1 - (id_rank - 1) / (n - 1)  (1 = best, 0.5 = chance)
+  id_top3       1 if id_rank <= 3 (secondary, alongside id_hit = top-1)
 cluster_agreement is one number per prediction set: Pearson between the upper triangles of the
 cosine-similarity matrices of P and of T over the test genes.
 """
@@ -15,10 +17,11 @@ import re
 
 import numpy as np
 
-PER_GENE = ("ref_spearman", "ref_p@5", "id_hit", "id_rank")
+PER_GENE = ("ref_spearman", "ref_p@5", "id_hit", "id_rank", "id_pct", "id_top3")
 # reported metric name -> per-gene key whose mean it is
-MEAN_OF = {"ref_spearman": "ref_spearman", "ref_p@5": "ref_p@5", "id_top1": "id_hit", "id_mean_rank": "id_rank"}
-METRICS = ("ref_spearman", "ref_p@5", "cluster_agreement", "id_top1", "id_mean_rank")
+MEAN_OF = {"ref_spearman": "ref_spearman", "ref_p@5": "ref_p@5", "id_top1": "id_hit", "id_mean_rank": "id_rank",
+           "id_pct": "id_pct", "id_top3": "id_top3"}
+METRICS = ("id_pct", "id_top1", "id_top3", "id_mean_rank", "ref_spearman", "ref_p@5", "cluster_agreement")
 
 
 def unit(A):
@@ -40,7 +43,28 @@ def per_gene_scores(P, T, R):
         p5[i] = len(set(np.argsort(-a)[:5]) & set(np.argsort(-b)[:5])) / 5
     S = Pu @ Tu.T                                         # prediction i vs true j
     ranks = np.array([rankdata(-S[i])[i] for i in range(n)], dtype=np.float64)
-    return {"ref_spearman": sp, "ref_p@5": p5, "id_hit": (ranks == 1).astype(np.float64), "id_rank": ranks}, Pu @ Pu.T
+    pct = 1.0 - (ranks - 1.0) / max(n - 1, 1)
+    return {"ref_spearman": sp, "ref_p@5": p5, "id_hit": (ranks == 1).astype(np.float64), "id_rank": ranks,
+            "id_pct": pct, "id_top3": (ranks <= 3).astype(np.float64)}, Pu @ Pu.T
+
+
+def id_scores(P, T):
+    """Identification-only summary (no reference set needed): mean id_pct, id_top1, id_top3, id_mean_rank.
+    P, T: (n, g) predicted / true deltas of the same n conditions, same gene panel. Used for checkpoint
+    selection on validation conditions during training."""
+    from scipy.stats import rankdata
+
+    Pu, Tu = unit(P), unit(T)
+    n = len(Pu)
+    S = Pu @ Tu.T
+    r = np.array([rankdata(-S[i])[i] for i in range(n)], dtype=np.float64)
+    return {"id_pct": float(np.mean(1.0 - (r - 1.0) / max(n - 1, 1))), "id_top1": float(np.mean(r == 1)),
+            "id_top3": float(np.mean(r <= 3)), "id_mean_rank": float(np.mean(r)), "n": n}
+
+
+def panel_genes(R, n: int = 500) -> np.ndarray:
+    """Gene panel: the n genes with the largest variance of TRAINING-perturbation deltas (no held-out info)."""
+    return np.argsort(-np.asarray(R).var(0))[:n]
 
 
 def true_sim(T):
@@ -115,7 +139,8 @@ def pool_seeds(sets):
         a["S_pred"].append(np.asarray(sets[name]["S_pred"]))
     for a in arms.values():
         pgs = a.pop("_pg")
-        a["per_gene"] = {k: _nanmean(np.stack([p[k] for p in pgs]), axis=0) for k in PER_GENE}
+        a["per_gene"] = {k: _nanmean(np.stack([p[k] for p in pgs]), axis=0) for k in PER_GENE
+                         if all(k in p for p in pgs)}
     return arms
 
 

@@ -99,3 +99,32 @@ def test_json_safe():
     out = RT.json_safe({"a": np.float64("nan"), "b": [np.int64(3), np.array([1.0, np.inf])], "c": "x"})
     assert out == {"a": None, "b": [3, [1.0, None]], "c": "x"}
     json.dumps(out, allow_nan=False)
+
+
+def test_id_pct_top3_and_id_scores():
+    rng = np.random.default_rng(0)
+    T = rng.normal(size=(10, 30))
+    pg, _ = RT.per_gene_scores(T.copy(), T, rng.normal(size=(5, 30)))
+    assert np.allclose(pg["id_pct"], 1) and np.allclose(pg["id_top3"], 1)       # perfect predictions
+    s = RT.id_scores(T.copy(), T)
+    assert s["id_pct"] == 1 and s["id_top1"] == 1 and s["id_top3"] == 1 and s["id_mean_rank"] == 1
+    rev = RT.id_scores(-T, T)                                                   # anti-correlated -> worst
+    assert rev["id_pct"] < 0.3
+    P = np.roll(T, 1, axis=0)                                                   # every prediction matches another gene
+    assert RT.id_scores(P, T)["id_top1"] == 0
+    assert set(RT.panel_genes(rng.normal(size=(8, 50)), 10)) <= set(range(50))
+
+
+def test_embedding_baselines_select_on_val_and_recover_signal():
+    from src.retrieval_baselines import select_and_predict
+    rng = np.random.default_rng(1)
+    d_e, d_g = 8, 40
+    A = rng.normal(size=(d_e, d_g))
+    E = rng.normal(size=(60, d_e))
+    R = E @ A + 0.05 * rng.normal(size=(60, d_g))          # deltas are a linear function of the gene embedding
+    tr, va, te = slice(0, 40), slice(40, 50), slice(50, 60)
+    for kind in ("ridge", "knn"):
+        P, hp, scores = select_and_predict(E[tr], R[tr], E[va], R[va], E[te], kind)
+        assert P.shape == (10, d_g) and hp in scores
+        if kind == "ridge":
+            assert RT.id_scores(P, R[te])["id_top1"] >= 0.9
