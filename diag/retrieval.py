@@ -94,6 +94,15 @@ def run(cache: str, exps: list, split: str = "test") -> dict:
                     elif np.allclose(sets[short]["P"], P):
                         continue                   # identical copy in another experiment
                 sets[key] = {"per_gene": pg, "S_pred": S, "P": P}
+    # ---- simple baselines for the val split (prepare() only saved test predictions); fit on training only ----
+    if split != "test":
+        from src.baselines import linear_gene_embedding, no_change, training_mean
+        for name, fn in (("linear", linear_gene_embedding), ("training_mean", training_mean), ("no_change", no_change)):
+            out = fn(ds, test, ctrl)
+            pm = out[0] if isinstance(out, tuple) else out
+            P = np.stack([np.asarray(pm[c]) - ctrl for c in test])[:, genes]
+            pg, S = RT.per_gene_scores(P, T, R)
+            sets[f"baselines/{name}"] = {"per_gene": pg, "S_pred": S, "P": P}
     # ---- seed ensembles: average the predicted deltas of all seeds of an arm, scored as one set ----
     by_arm = {}
     for k, v in sets.items():

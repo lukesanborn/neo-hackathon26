@@ -577,6 +577,8 @@ All runs select their checkpoint by validation ID percentile. Experiment `replog
 - **Blood vs public:** +0.04–0.08 without the contrastive loss; ≈ 0–0.03 with it (part of this may be the bins50-vs-log1p input difference, see above).
 - **2-seed ensembles:** +0.02–0.04. Best: blood-JEPA → Cell-JEPA FT + contrastive, ens 0.816; blood-scGPT → Cell-JEPA FT + contrastive, ens 0.809.
 
+**Figure:** `diag/results/figures/A25_ladder.png` (script `diag/fig_ladder.py`). Each row adds one change to the row above; panel A shows ID percentile with jumps, panels B–D show top-1/3/10. Validation genes only. The PCA and training-mean baselines were fitted on training genes and predicted for the validation genes in `diag/retrieval.py --split val`. Largest single jumps: scGPT gene vectors over the PCA baseline (+0.098), the contrastive loss (+0.077), PCA over training mean (+0.078), and seed averaging (+0.038). The JEPA steps (+0.005, +0.004) and blood pretraining (−0.005, once the contrastive loss is on) are ≈ 0.
+
 **Bottom line of the screen:** the contrastive loss, blood pretraining and ensembling each help; **JEPA (in pretraining or in fine-tuning) does not move retrieval** in this setup. No deep-config difference is resolved on 31 genes.
 
 ## Literature context (for the write-up)
