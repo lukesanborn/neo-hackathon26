@@ -57,11 +57,6 @@ for ax in [axA, axJ] + axs:
     ax.spines["bottom"].set_color(GRID)
     ax.tick_params(colors=MUTED, labelsize=10, length=0)
 
-# separator between the team's ladder and the new runs
-for ax in [axA, axJ] + axs:
-    ax.axhline(ys[SPLIT] + 0.5, color=MUTED, lw=0.8, ls=(0, (4, 3)))
-axA.text(0.94, ys[SPLIT] + 0.5, "new runs (this session) ↓", fontsize=9.5, color=MUTED, va="bottom", ha="right",
-         backgroundcolor="#fcfcfb")
 
 # Panel A: ID percentile, bars start at chance
 for y, c, (_, _, col, _) in zip(ys, vals, ROWS):
