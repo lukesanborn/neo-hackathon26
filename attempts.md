@@ -513,6 +513,19 @@ Note: the experiment folder also contains single-seed `celljepa_mk_*` runs we di
 
 **Baseline naming used from here on:** "Baseline: linear (PCA gene embedding)" is *the* baseline (Ahlmann-Eltze et al. 2025, no external knowledge). "scGPT gene vectors only, no model" is a second reference row showing how much of the result comes from scGPT's gene knowledge alone.
 
+## A23. Step 1: blood continued pretraining from public scGPT (Nov 7)
+
+`diag/launch_blood_pretrain.py`. Both arms start from public scGPT_human (identical weights) on the 2M blood + bone-marrow cache (A21): 2 epochs × 61,875 steps, batch 32, lr 3e-5, seed 0, B300. Both completed.
+
+| Arm | Val recon after ep 1 | Val recon after ep 2 (best) | Teacher spread | Centred-target spread | Wall time |
+|---|---|---|---|---|---|
+| plain scGPT objective | 9.16 | **9.13** | — | — | 90 min |
+| JEPA `center` | 10.46 | **10.25** | 0.027 → 0.031 | 0.041 | 106 min |
+
+- **Both trained cleanly. JEPA `center` did not collapse:** teacher spread rose slightly (0.027 → 0.031), and the centred target stayed at ~0.041. This is the same healthy behaviour as the A19 pilot.
+- JEPA reconstructs a little worse (10.25 vs 9.13), the expected cost of the extra objective (as in A9/A19). Both are far below public scGPT's starting point on kidney (~82 at step 0; different corpus, so only indicative).
+- Checkpoints: `trackA/checkpoints/scgpt_kidney_blood_lr3e5` and `trackA/checkpoints/jepa_kidney_blood_lr3e5`. The `_kidney` in the name is only the export-naming convention; the tag marks the blood corpus.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.

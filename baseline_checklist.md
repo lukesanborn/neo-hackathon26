@@ -77,7 +77,8 @@ The paper (arXiv 2602.02093) has three evaluations, all comparing kidney-pretrai
 - ⬜ Replogle fine-tunes (public scGPT + kidney ckpts, both recipes, seeds) + retrieval on 103 test genes
 - ✅ Continued-pretraining code from public scGPT (A18) and 2M blood/marrow cache (A21)
 - ✅ `<cls>` pilot (A19): paper JEPA slowly collapses from public scGPT; `center` carries per-cell signal
-- ⬜ Blood continued pretraining: scGPT vs JEPA `center` (+ paper JEPA as reference), 2 epochs, lr 3e-5
+- ✅ Blood continued pretraining (A23): scGPT 9.13 vs JEPA `center` 10.25 val recon; no collapse
+- ⬜ Step 2 screen on Replogle (validation-selected): public / blood-scGPT / blood-JEPA × 2 FT recipes × contrastive on/off × 2 seeds
 - ⬜ E9: few-cell perturbation identification from frozen embeddings (top-ranked in `experiment.md`; no training)
 - ⬜ Cell-type / cell-state annotation via a linear probe on frozen embeddings (reuses the Task 2 code)
 - ⬜ In-silico perturbation ranking with the fine-tuned predictor (prioritise knockdowns against a target expression profile)
