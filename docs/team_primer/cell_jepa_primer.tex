@@ -1,0 +1,396 @@
+\documentclass[11pt]{article}
+\usepackage[letterpaper,margin=0.9in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage[most]{tcolorbox}
+\usepackage{hyperref}
+\usepackage{microtype}
+
+\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black,citecolor=blue!50!black}
+\setlist{itemsep=1pt,topsep=3pt,parsep=0pt}
+\setlength{\parskip}{3pt}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.12}
+
+\newtcolorbox{keybox}[1]{colback=blue!4,colframe=blue!45!black,fonttitle=\bfseries,title=#1,boxrule=0.6pt,arc=2pt,left=5pt,right=5pt,top=3pt,bottom=3pt}
+\newtcolorbox{warnbox}[1]{colback=orange!6,colframe=orange!60!black,fonttitle=\bfseries,title=#1,boxrule=0.6pt,arc=2pt,left=5pt,right=5pt,top=3pt,bottom=3pt}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\up}{$\uparrow$}
+\newcommand{\down}{$\downarrow$}
+
+\title{\textbf{Cell-JEPA, scGPT and the PCA Bar}\\[2pt]
+\large A team primer on everything we built, ran and found}
+\author{neo-hackathon26 team \quad\textbullet\quad compiled Nov 7, 2026 from every branch of the repo}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-1.5em}
+
+\begin{keybox}{The 60-second version}
+\textbf{Question.} Does a JEPA-style (Joint-Embedding Predictive Architecture) objective make single-cell foundation models better, in particular at predicting what happens to a cell when you knock a gene down?
+
+\textbf{What we did.} (1) Re-implemented the Cell-JEPA paper from its text (there is no public code), pretrained matched JEPA and scGPT models on 814k kidney cells, and re-ran all three of its evaluations. (2) Added JEPA terms to public scGPT during perturbation fine-tuning. (3) Moved past the paper: continued pretraining on 2M blood cells, a bigger perturbation benchmark (Replogle K562, 103 held-out genes), new retrieval-style metrics, a 24-run factor screen and a masking-strategy sweep.
+
+\textbf{What we found.}
+\begin{itemize}
+\item The paper's headline \emph{replicates in direction}: JEPA embeddings cluster cell types much better than matched scGPT (zero-shot PBMC AvgBIO $0.606$ vs $0.375$; paper $0.719$ vs $0.529$).
+\item \textbf{But plain PCA beats every model on that task} ($0.773$), including the paper's own published number. The paper never ran PCA.
+\item On perturbation prediction measured by error (delta RMSE), \textbf{a linear PCA model beats every deep model} we trained (0.058 vs $\geq 0.068$), consistent with the literature.
+\item On \emph{identifying} which gene was knocked down from its predicted response, fine-tuned scGPT models \textbf{clearly beat the PCA baseline} (Replogle test ID percentile $\approx 0.78$ vs $0.54$; all CIs exclude 0). That is our strongest positive result.
+\item \textbf{JEPA itself contributes $\approx 0$ to that win.} In pretraining, in fine-tuning, and across 10 masking/target variants, the matched no-JEPA control ties or beats JEPA. JEPA embeddings appear \emph{more invariant} to the within-cell-type shifts that knockdowns cause, which matches the paper's own explanation for its weak perturbation metrics.
+\end{itemize}
+\end{keybox}
+
+\tableofcontents
+\vspace{0.5em}
+
+%=====================================================================
+\section{The problem and why anyone cares}
+
+\textbf{Perturbation biology.} Turning a gene down (CRISPR interference, ``CRISPRi'') or up (CRISPRa) and reading out the whole transcriptome is how labs learn what genes \emph{do}. \textbf{Perturb-seq} pairs pooled CRISPR screens with single-cell RNA sequencing: every cell carries a guide barcode and gets its $\sim$5,000--20,000-gene expression profile measured. The datasets we use are all K562 (a leukemia cell line) CRISPRi screens: \textbf{Adamson} (2016; 86 knockdowns, $\sim$68k cells) and \textbf{Replogle K562 essential} (2022; we keep 412 knockdowns, 68,716 cells).
+
+\textbf{Why predict instead of measure?} From \code{docs/use\_case\_map.md} (Luke): a genome-wide transcriptional screen costs roughly \$100k--\$1M and 3--5 months; Perturb-seq cost scales roughly linearly with the number of perturbations (each needs $\sim$100--800 cells, each fully sequenced). Brute force already exists for single genes in common lines (Replogle screened every expressed gene), so the \emph{irreducible} value of a predictor is in what experiments cannot cover: \textbf{gene pairs} ($\sim$200M), \textbf{new cell contexts}, \textbf{cell-limited samples} (biopsies, primary cells) and in vivo. The realistic insertion point is between free public-data mining (DepMap co-essentiality, STRING) and an expensive screen: \emph{measure the genes you can justify, predict the rest, and shortlist the next 20--100 to validate in an arrayed screen.}
+
+That framing matters for metrics: a lab does not need perfectly accurate expression values, it needs the \textbf{right genes at the top of a shortlist}. This is why we ended up caring about retrieval/identification metrics (Sec.~\ref{sec:metrics}).
+
+%=====================================================================
+\section{Background}
+
+\subsection{Single-cell data in one page}
+A scRNA-seq matrix is cells $\times$ genes of integer counts. It is \textbf{extremely sparse} (a PBMC cell expresses $\sim$460 of 3,346 genes; most entries are 0, partly biology and partly ``dropout'', i.e.\ molecules that were present but not captured). Standard preprocessing: normalise each cell to a fixed total, \code{log1p}, keep $\sim$2k highly variable genes (HVGs), then \textbf{PCA to 50 components}. Clustering (Leiden) on that PCA space is the workhorse of every single-cell paper. Keep that in mind: \emph{PCA is not a strawman, it is the field's default representation, and it is very good at separating cell types.}
+
+\textbf{Perturbation response (``delta'').} Cells are destroyed when sequenced, so we never see the same cell before and after. The response of knockdown $g$ is defined at the population level:
+$\Delta_g = \overline{x}_{\text{cells with guide } g} - \overline{x}_{\text{control cells}}$.
+A model is asked: given control cells and the \emph{identity} of an unseen gene $g$, predict $\Delta_g$.
+
+\subsection{scGPT: a transformer for cells}
+scGPT (Cui et al., \emph{Nat.\ Methods} 2024) treats a cell as a ``sentence'' of genes.
+\begin{itemize}
+\item \textbf{Tokens.} Each expressed gene contributes a token = learned \emph{gene embedding} (which gene) + \emph{value embedding} (how much). Values are \textbf{binned per cell} into 50 quantile bins, so the model sees relative rank within a cell, not raw counts. A special \code{<cls>} token is prepended; its output is the ``cell embedding''.
+\item \textbf{Pretraining = masked value prediction.} Hide the values of some genes; predict them from the rest (an attention mask controls who sees what, which is the ``generative'' part). Public \code{scGPT\_human} was trained on $\sim$33M human cells, all tissues, lr $10^{-4}$ with a 10,000-step warmup.
+\item \textbf{Fine-tuning losses} we reuse: \textbf{GEP} (gene expression prediction, the masked-value MSE), \textbf{GEPC} (predict expression from the cell embedding, an MVC-style head), \textbf{ECS} (elastic cell similarity: pushes cell embeddings apart unless they are already similar).
+\item \textbf{Perturbation mode.} Input = a control cell's profile plus a per-gene ``perturbation flag'' marking the knocked-down gene; output = predicted post-perturbation expression, trained with MSE. Because the flag sits on the gene's own column, \textbf{the target gene must be among the measured genes}. This is why we dropped 680 of Replogle's 1,092 knockdowns.
+\end{itemize}
+
+\subsection{Self-supervised learning and student--teacher models}
+\textbf{Contrastive learning} (SimCLR, InfoNCE) pulls two augmented ``views'' of the same item together and pushes other items apart; it needs negatives. \textbf{Masked modelling} (BERT, MAE, scGPT) reconstructs hidden inputs; it needs no negatives but spends capacity on predicting noisy low-level detail (for cells: exact counts of sparsely captured genes).
+
+\textbf{Student--teacher (self-distillation)} methods such as \textbf{BYOL} and \textbf{DINO} remove negatives differently. Two copies of the encoder:
+\begin{itemize}
+\item the \textbf{student} sees a corrupted/partial view and is trained by gradient descent;
+\item the \textbf{teacher} sees the full (or another) view and produces the target. It gets \textbf{no gradients} (``stop-gradient''); its weights are an \textbf{exponential moving average (EMA)} of the student's, $\theta_T \leftarrow m\,\theta_T + (1-m)\,\theta_S$ with $m\approx 0.996$, or it is simply frozen.
+\item A small \textbf{predictor} head maps student output to teacher output; the loss is usually $1-\cos(\text{pred}, \text{sg}(\text{teacher}))$.
+\end{itemize}
+\textbf{The failure mode is collapse:} if both networks output the same constant vector for every input, the loss is zero. Stop-gradient + EMA + predictor asymmetry make collapse unstable but not impossible. Standard guards, all of which we implemented as variants:
+\begin{itemize}
+\item \textbf{centring} (DINO): subtract a running mean of teacher outputs, so the constant part of the target is removed (our \code{center} variant);
+\item \textbf{variance/covariance hinges} (VICReg): penalise embedding dimensions whose variance falls below a threshold (\code{vicreg});
+\item \textbf{per-token targets} (I-JEPA style): predict many patch/gene embeddings instead of one pooled vector, which is harder to satisfy trivially (\code{token}).
+\end{itemize}
+The diagnostic we log everywhere is \textbf{teacher spread}: the std of teacher \code{<cls>} embeddings across cells. Healthy $\approx 0.03$--$0.04$; collapsed $\approx 0.00002$.
+
+\subsection{JEPA in general}
+JEPA is LeCun's 2022 proposal (``A Path Towards Autonomous Machine Intelligence''), instantiated as \textbf{I-JEPA} (images, Assran et al.\ 2023) and \textbf{V-JEPA} (video, 2024). The idea in one line: \emph{predict the representation of the missing part, not the missing part itself.} A context encoder (student) sees a masked input, a target encoder (EMA teacher) embeds the full input, and a predictor fills in the target embeddings of masked regions. Because the target is an abstract embedding, the model is not forced to model unpredictable pixel-level (or count-level) noise, and it tends to learn semantic features that work well with simple linear probes. The costs: (i) collapse must be actively prevented, and (ii) the learned features are \emph{by design invariant} to whatever varies between views. If a downstream task depends on exactly those details, JEPA can hurt. That second point turns out to be central to our results.
+
+\subsection{Cell-JEPA (arXiv 2602.02093)}
+Cell-JEPA adds a JEPA term to scGPT pretraining: the student sees a cell with 15\% of values masked, the EMA teacher sees the full cell, the predictor maps student \code{<cls>} to teacher \code{<cls>}, loss $=$ reconstruction $+\;1000\times(1-\cos)$. Pretrained on $\sim$800k kidney cells (CELLxGENE Census), 4 epochs, batch 32, lr $10^{-4}$. Its three evaluations, all \emph{kidney-JEPA vs kidney-scGPT}:
+\begin{center}\small
+\begin{tabular}{llll}
+\toprule
+Task & What & Paper: Cell-JEPA vs scGPT & Notes\\
+\midrule
+1 & Fine-tune on PBMC-10K, cluster cell types & AvgBIO 0.783 vs 0.753 & gap 0.03, no error bars\\
+2 & Zero-shot PBMC-10K embeddings, cluster & \textbf{AvgBIO 0.719 vs 0.529} & the headline\\
+3 & Perturbation prediction (Adamson, Norman) & abs.\ Pearson 0.937 vs 0.905 & but $\Delta$-Pearson DE $-0.176$ vs $0.101$\\
+\bottomrule
+\end{tabular}
+\end{center}
+The paper itself says JEPA features ``invariant across masked views'' may suppress sensitivity to perturbation-induced deviations. It has \textbf{no PCA, mean or linear baselines, no ablations of the 1000$\times$ weight, and no released code or checkpoints} (we emailed the author).
+
+\subsection{Why the bar is PCA, not scGPT}\label{sec:pca}
+Beating scGPT is not evidence of progress, because \textbf{deep single-cell models frequently lose to trivial baselines}:
+\begin{itemize}
+\item \textbf{Ahlmann-Eltze, Huber \& Anders} (\emph{Nat.\ Methods} 2025): for unseen single and double perturbations, no deep model (scGPT, GEARS, scFoundation, \dots) beat a simple additive or linear baseline.
+\item \textbf{Kedzierska et al.} (\emph{Genome Biol.} 2025): zero-shot scGPT/Geneformer embeddings often lose to HVG/PCA for clustering; released scGPT without its cell embedding ``predicts the median expression value for every gene''. (We reproduced this ``stuck'' behaviour independently, Sec.~\ref{sec:plateau}.)
+\item \textbf{Systema} (Vi\~nas Torn\'e et al., \emph{Nat.\ Biotechnol.} 2025): much apparent skill is just the systematic control-vs-perturbed shift that every knockdown shares.
+\end{itemize}
+
+\textbf{The linear baseline} (\code{src/baselines.py::linear\_gene\_embedding}, Ahlmann-Eltze style), which we call \emph{the} baseline: take the matrix of training responses $Y$ (genes $\times$ training perturbations); PCA it to get $K=10$ gene embeddings $G$; represent each perturbation by its target gene's row of $G$; fit a ridge map $W$ ($\lambda=0.1$) so that $Y \approx G\,W\,G_{\text{pert}}^{\top} + b$. For an unseen gene, read off its row of $G$ and predict. It uses no external knowledge and no neural network. \textbf{Training mean} (average of training deltas, same prediction for every gene) and \textbf{no change} (predict control) are the two trivial references.
+
+We also added a second reference, \textbf{``scGPT gene vectors only, no model''}: take scGPT's learned \emph{gene} embedding of the target and fit ridge or kNN to the response. It tells us how much of any win comes from scGPT's gene knowledge alone rather than from running the transformer.
+
+%=====================================================================
+\section{Project structure, data and infrastructure}
+
+\textbf{Two tracks, never mixed in one table} (\code{outline.md}):
+\begin{itemize}
+\item \textbf{Track A, replication}: our unofficial re-implementation of Cell-JEPA, kidney pretraining from scratch, the paper's three tasks. Every number carries ``reimplemented (unofficial)''. Deviation log in \code{docs/track\_a.md}.
+\item \textbf{Track B, adaptation}: start both arms from \emph{public} scGPT; compare perturbation fine-tuning with and without a JEPA-style auxiliary loss. Luke's v0 target is \emph{population-level}: the frozen teacher's mean embedding of up to 128 treated training cells minus the control centroid; loss $=$ MSE $+\,0.5(1-\cos)$.
+\end{itemize}
+
+\textbf{Data contract and leakage rules.} Adamson uses the GEARS \code{simulation} split, seed 1 (hash \code{5618e72828c1}): \textbf{58 train / 7 val / 22 test genes}. Replogle uses the same generator (hash \code{d4237826c68c}): \textbf{278 / 31 / 103}. Splits are by \emph{gene}, never by cell. Test outcomes never touch training, teacher targets, hyperparameters or baselines; checkpoints are selected on validation only and test is scored once. 256 control cells per held-out condition are drawn once and shared by every method. A vocabulary bug was found and fixed: 11 Adamson targets use outdated symbols (AARS, ATP5B, SLMO2, \dots) that silently became \code{<pad>} under the tutorial code; we map them to current HGNC names and fail loudly if any target is lost.
+
+\textbf{Compute.} Everything heavy runs on \textbf{Modal} (workspace \code{ls9563}, volume \code{jepa-perturb}). Most runs used \textbf{B300 (Blackwell)} GPUs. scGPT depends on torchtext, which stops at torch 2.3, so the Blackwell image replaces it with an import shim (scGPT only imports \code{torchtext.vocab.Vocab}). Timings: kidney pretraining 0.05 s/step, $\sim$75--90 min for 4 epochs; an Adamson fine-tune $\sim$25--40 min; a Replogle fine-tune $\sim$30--40 min.
+
+\textbf{Pretraining corpora.} Kidney: Census 2023-05-15, \textbf{814,279 cells}, scGPT's filter, per-cell 50-bin quantiles. Blood + bone marrow: Census 2023-05-15, a seeded sample of \textbf{2,000,000} normal cells from 55 datasets; screened (by title) for overlap with the PBMC-10K evaluation data and none found.
+
+%=====================================================================
+\section{Track A: replicating Cell-JEPA}
+
+\subsection{Pretraining: a plateau, a collapse, and a learning-rate fix}\label{sec:plateau}
+This was the hardest engineering arc of the project (\code{attempts.md} A2--A10).
+\begin{enumerate}
+\item At the paper's \textbf{lr $10^{-4}$}, the \emph{plain scGPT} objective got \textbf{stuck} at validation reconstruction $\approx 35$--$50$ (the ``predict each gene's typical value'' solution; a working model reaches $\approx 16$--$22$). The paper's JEPA (\code{faithful}) \textbf{collapsed}: teacher spread fell to $1.6\times10^{-5}$.
+\item One-seed ablations (pre-norm, fp32, no clipping, lower lr) all seemed to fix it, until a 2-seed clip sweep showed escape was \textbf{random} (3/12 escaped, unrelated to clip value). Lesson: \emph{one seed cannot separate a cause from luck.}
+\item A 4-seed escape-rate study settled it: plain scGPT at lr $10^{-4}$ escaped \textbf{0/4}; JEPA \code{faithful} 3/4; \textbf{plain scGPT at lr $3\times10^{-5}$ escaped 4/4}. When JEPA failed to escape, its teacher collapsed too: \emph{plateau and collapse are the same event.}
+\item At lr $3\times10^{-5}$, JEPA also trains 4/4 and does not collapse. A 4k-step warmup at lr $10^{-4}$ also works 4/4 (and is what scGPT's authors did), kept as a backup.
+\end{enumerate}
+\textbf{Final matched kidney pretraining (lr $3\times10^{-5}$, recorded deviation):} val recon scGPT \textbf{15.68}, JEPA \code{faithful} 17.73, \code{token} 18.40, \code{center} 18.73; teacher spread 0.037--0.040 (healthy). JEPA always reconstructs a bit worse; that is the expected cost of the extra objective and not the paper's metric.
+
+\begin{warnbox}{Claim that does \emph{not} survive}
+``JEPA helps transformers escape the reconstruction plateau'' is true at lr $10^{-4}$ (3/4 vs 0/4) but is not a JEPA-specific win: a learning-rate change fixes plain scGPT outright. Plateau-then-sudden-drop is a known transformer phenomenon (Gopalani \& Hu 2025; Chen et al.\ 2023 on BERT); post-norm transformers need warmup (Xiong et al.\ 2020).
+\end{warnbox}
+
+A \textbf{context-shuffle probe} (shuffle visible values within a cell) left reconstruction unchanged: the models use \emph{which genes are expressed} (which encodes cell type), not \emph{how much}.
+
+\subsection{Task 2 (headline): zero-shot PBMC clustering}
+Data processed exactly as the paper (scvi-tools: 11,990 cells, 3,346 genes, 9 labels). Metrics are scib-equivalent: NMI and ARI at the best Leiden resolution, ASW $=(\text{silhouette}+1)/2$, \textbf{AvgBIO} = their mean.
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+Embedding & AvgBIO\up & NMI & ARI & ASW\\
+\midrule
+\textbf{PCA-50 on log1p, no model} & \textbf{0.773} & 0.838 & 0.881 & 0.600\\
+public scGPT\_human (33M cells) & 0.709 & 0.799 & 0.699 & 0.627\\
+\textbf{kidney JEPA \code{faithful} (ours)} & \textbf{0.606} & 0.642 & 0.535 & 0.641\\
+kidney JEPA \code{center} / \code{token} & 0.471 / 0.428 & & &\\
+\textbf{kidney scGPT (ours, matched)} & \textbf{0.375} & 0.430 & 0.223 & 0.473\\
+\midrule
+\emph{paper} Cell-JEPA / scGPT & 0.719 / 0.529 & & &\\
+\bottomrule
+\end{tabular}
+\end{center}
+\textbf{Replicates in direction and size} (+0.231 vs paper +0.191, on all four sub-metrics); our absolute values are $\sim$0.12 lower. \textbf{PCA beats everything, including the paper's reported Cell-JEPA.}
+
+\subsection{Task 1: fine-tuned PBMC clustering}
+Paper recipe (GEP + GEPC + ECS, +JEPA for JEPA checkpoints; 40\% mask; 30 epochs). A noise check found \textbf{$\pm 0.07$ AvgBIO run-to-run} with identical recipe and seed (GPU non-determinism), so we used 3 seeds. Result: \textbf{JEPA 0.695 $\pm$ 0.046 vs scGPT 0.500 $\pm$ 0.003} (paper 0.783 vs 0.753). Direction replicates with a larger gap (JEPA's worst seed beats scGPT's best); the gain is mostly ARI. PCA (0.773) still wins. Note the paper's 0.03 gap is below the noise level we measured.
+
+\subsection{Task 3: Adamson perturbation prediction}
+16 runs: \{kidney JEPA, kidney scGPT, \code{token}, \code{center}\} $\times$ \{Cell-JEPA FT recipe, scGPT FT recipe\} $\times$ 2 seeds. The Cell-JEPA FT recipe $=$ MSE $+\;1.0\cdot$JEPA $+\;0.8\cdot$ECS; the matched scGPT recipe $=$ MSE $+\;0.8\cdot$ECS.
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+Arm (22 held-out genes) & delta RMSE\down & GEARS $\Delta$-Pearson & DE20 $\Delta$-Pearson\\
+\midrule
+\textbf{Linear (PCA) baseline} & \textbf{0.058} & \textbf{0.720} & 0.738\\
+Training mean & 0.059 & 0.711 & 0.733\\
+best deep arm (JEPA \code{token}/\code{center}) & 0.074 & 0.56--0.58 & 0.74--0.75\\
+kidney JEPA $\to$ Cell-JEPA FT (paper arm) & 0.078 & 0.573 & 0.753\\
+kidney scGPT $\to$ scGPT FT (paper baseline) & 0.079 & 0.555 & 0.741\\
+public scGPT $\to$ either recipe (A4) & 0.072--0.074 & 0.59--0.62 & 0.76--0.78\\
+No change & 0.091 & undefined & undefined\\
+\bottomrule
+\end{tabular}
+\end{center}
+JEPA is ahead of matched scGPT on every column but only by 0.001--0.016 (within seed noise). The paper's $\Delta$-metric drop \textbf{does not} replicate. \textbf{Every deep model loses to linear and training-mean.} Our mean-based absolute Pearson is $\approx 0.99$ vs the paper's 0.90--0.94, so the paper's exact metric remains unknown (we also report per-cell metrics). Some fine-tunes produced identical, input-independent predictions (0.1424 delta RMSE, three different arms): unexplained degenerate output.
+
+%=====================================================================
+\section{Track B and the case against delta RMSE}\label{sec:metrics}
+
+Track B (public scGPT $\pm$ population-level JEPA aux, 2 seeds): \textbf{0.0723 vs 0.0725} delta RMSE, CI on the difference $[-0.0020, 0.0014]$: \textbf{no difference}. Both lose to linear by $\sim$0.015. A small DE20 $\Delta$-Pearson edge for JEPA (+0.014) is weak.
+
+Luke then asked whether delta RMSE measures what the application needs, and found three independent reasons it does not (\code{docs/clustering\_finding.md}):
+\begin{enumerate}
+\item \textbf{Saturation.} Mean-based Pearson is $\approx 0.99$ even for ``no change''.
+\item \textbf{Training mean wins on RMSE but predicts the same profile for every gene}, so it has zero value for clustering, ranking or identification. Low error can be \emph{anti}-correlated with usefulness, because hedging toward the average is rewarded.
+\item \textbf{Different metrics, different winners.} 94--99\% of every predicted response is a shared ``generic knockdown'' component (68\% in real data). After subtracting it:
+\end{enumerate}
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+Metric (Adamson, 22 genes) & Winner & Numbers\\
+\midrule
+delta RMSE & linear & 0.0575 vs 0.072\\
+Similarity structure (centred Mantel $r$; ceiling 0.965) & JEPA-aux $\approx$ linear $>$ scGPT & 0.259 / 0.246 / 0.178, all $p\le 0.015$\\
+precision@5 (which knockdowns move the most) & linear & 4/5, $p=0.003$; deep models 1/5\\
+\textbf{Inverse retrieval} (profile $\to$ which gene) & \textbf{scGPT, JEPA-aux $\gg$ linear} & top-1 27\% / 18\% vs 9\% (n.s.)\\
+\bottomrule
+\end{tabular}
+\end{center}
+\textbf{Takeaway:} no single number says ``this model is good''. The headline error metric favours the very methods that cannot do the identification task the application needs. This pivot set up the rest of the project.
+
+%=====================================================================
+\section{The retrieval program: where deep models beat PCA}
+
+\subsection{Metrics}
+For each held-out gene, compare its \emph{predicted} delta (on a 500-gene panel chosen from training deltas only) with the \emph{true} deltas of all held-out genes:
+\begin{itemize}
+\item \textbf{ID percentile} (primary, chosen before the screen): where the correct gene ranks; 1 = first, 0.5 = chance.
+\item \textbf{Top-1 / top-3 / top-10}: correct gene in the top $k$ (chance on Replogle: 0.010 / 0.029 / 0.097).
+\item \textbf{Neighbour Spearman}: does the prediction rank the measured training knockdowns in the same order as the truth?
+\end{itemize}
+Uncertainty: paired bootstrap over genes (2,000 resamples, 95\% percentile CIs).
+
+\subsection{Adamson first, then Replogle}
+On Adamson (A16/A17), public-scGPT models identified the right gene 16--23\% of the time vs linear 9\% (chance 4.5\%), but with 22 genes the CIs included 0. The only CI-supported JEPA effect anywhere in Adamson: with public scGPT, the Cell-JEPA FT recipe recovers similarity structure among held-out genes better than the scGPT recipe (cluster agreement +0.29, CI [0.09, 0.44]).
+
+We therefore prepared \textbf{Replogle} (5$\times$ more test genes). Results on \textbf{103 test genes} (A22):
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+Predictions & ID pct\up & Top-1 & Top-3 & Nbr.\ Spearman\\
+\midrule
+public scGPT $\to$ Cell-JEPA FT & 0.688 & 0.121 & 0.180 & 0.606\\
+public scGPT $\to$ scGPT FT & 0.680 & 0.141 & 0.214 & 0.607\\
+kidney scGPT / kidney JEPA (ours) & 0.590 / 0.584 & 0.09 / 0.07 & & 0.45 / 0.38\\
+scGPT gene vectors only (ridge) & 0.675 & 0.019 & 0.068 & 0.453\\
+\textbf{Baseline: linear (PCA)} & \textbf{0.542} & 0.010 & 0.049 & 0.548\\
+Training mean & 0.500 & 0.010 & 0.029 & 0.513\\
+\bottomrule
+\end{tabular}
+\end{center}
+\begin{itemize}
+\item \textbf{Fine-tuned models beat PCA}: +0.14 ID percentile, and on top-1/top-3; every CI excludes 0. The Adamson trend is confirmed.
+\item \textbf{scGPT's gene vectors alone match the models on ID percentile} (0.675). What the full model adds is \textbf{precision at the top}: 6--7$\times$ more top-1 hits and better neighbour ranking (CIs exclude 0). That is exactly what a shortlist tool needs.
+\item \textbf{JEPA in fine-tuning does not help} (0.688 vs 0.680). Our kidney checkpoints are clearly weaker than public scGPT for this.
+\end{itemize}
+
+\subsection{Blood continued pretraining and the 24-run factor screen}
+Continuing public scGPT with the paper's \code{faithful} JEPA slowly collapses (teacher spread $0.009\to0.003$; public scGPT was trained without a \code{<cls>} objective, so its \code{<cls>} is nearly constant). The \code{center} variant carries real per-cell signal (JEPA loss 20$\times$ below a constant-guess reference). So we continued pretraining public scGPT on the 2M blood cells with \textbf{plain scGPT} (val recon 9.13) and \textbf{JEPA \code{center}} (10.25, no collapse), identical init and data order.
+
+The \textbf{Step 2 screen} (A25) crossed \{public, blood-scGPT, blood-JEPA\} $\times$ \{scGPT FT, Cell-JEPA FT\} $\times$ \{contrastive retrieval loss off/on\} $\times$ 2 seeds, selected by validation ID percentile. The \textbf{contrastive loss} is an InfoNCE term making each training cell's predicted delta closest to its own perturbation's mean delta. Effects on the 31 validation genes:
+\begin{itemize}
+\item \textbf{Contrastive loss: the only consistent lever} (+0.08 for public scGPT, +0.02--0.04 for blood).
+\item Blood vs public: +0.04--0.08 without the contrastive loss, $\approx$0--0.03 with it (partly confounded by bins50 vs log1p inputs).
+\item 2-seed ensembling: +0.02--0.04.
+\item \textbf{JEPA pretraining (blood-JEPA $-$ blood-scGPT): $-0.002$ to $+0.005$, i.e.\ zero.} Cell-JEPA FT vs scGPT FT: $\le 0$.
+\end{itemize}
+
+\textbf{Test-split scores of the same configurations} (103 genes; from \code{diag/results/blood\_knobs\_partial\_retrieval\_ci.md}, not yet written up in \code{attempts.md}). Best: public scGPT $\to$ scGPT FT + contrastive, 2-seed ensemble \textbf{ID pct 0.787} (vs PCA: +0.245, CI [0.17, 0.31]; vs gene-vector ridge: +0.112, CI [0.06, 0.17]); blood-scGPT 0.782; blood-JEPA 0.774. The matched blood-JEPA minus blood-scGPT gap on test ranges from $-0.032$ to $+0.004$ across the four recipe $\times$ loss cells: again no JEPA benefit. \emph{Trade-off to know:} the contrastive loss lowers neighbour Spearman (Cell-JEPA FT arms: $\approx$0.13--0.30 with it vs 0.44--0.56 without), so it sharpens identification at the cost of ranking measured neighbours.
+
+\begin{keybox}{Our cleanest positive result (say it this way)}
+On 103 held-out Replogle knockdowns, a fine-tuned scGPT perturbation model with a contrastive retrieval loss ranks the true knocked-down gene at the 79th percentile on average (PCA linear baseline: 54th; scGPT gene vectors alone: 68th), with bootstrap CIs excluding 0 for both comparisons. The gain comes from pretrained gene knowledge, fine-tuning on measured perturbations, the contrastive loss and ensembling, \textbf{not} from JEPA.
+\end{keybox}
+
+\subsection{Latent-space retrieval and the invariance finding (A26)}
+Idea: retrieve in the model's \emph{embedding} space instead of expression space, hoping JEPA's tidier space would help. Sanity checks killed it: converting predicted expression back into encoder input destroys most signal (even the true answer only reaches 0.52--0.69). But the ceiling check produced a real finding. On \emph{real} cells, split in halves:
+\begin{center}\small
+\begin{tabular}{lcc}
+\toprule
+Embedding space & ID pct (real cells) & Top-1\\
+\midrule
+public scGPT & 0.935 & 0.74\\
+blood-scGPT & 0.910 & 0.55\\
+\textbf{blood-JEPA (\code{center})} & \textbf{0.685} & \textbf{0.06}\\
+\bottomrule
+\end{tabular}
+\end{center}
+\textbf{JEPA embeddings separate knockdowns far worse}, even though they cluster cell types far better (Tasks 1--2). JEPA learns features that are invariant within a cell type, and knockdowns are mostly within-cell-type shifts. This is the paper's own hypothesis for its weak delta metrics, now measured directly. Caveat: one variant, 2 epochs, 31 genes.
+
+%=====================================================================
+\section{The masking and target ``knobs'' sweep}
+If JEPA's invariance is the problem, maybe changing \emph{what is hidden} or \emph{what is predicted} fixes it. Branch \code{rhea/tweak-model-knobs} (new \code{src/track\_a/masking.py}) continued public scGPT on the kidney cache with JEPA \code{center} and varied one knob at a time:
+\begin{itemize}
+\item \textbf{2a, mask unit:} random genes (baseline), whole \textbf{co-expression programs} (clustered from training cells), whole \textbf{MSigDB Hallmark pathways}, or the cell's \textbf{top-expressed genes}.
+\item \textbf{2b, mask ratio:} 15\% (baseline), 30\%, 50\%, 80\%.
+\item \textbf{2c, target:} centred full-cell (baseline), per-token masked-part (I-JEPA style), the paper's \code{faithful} full-cell, and program masking + token target.
+\item \textbf{Control: \code{no\_jepa}}: same pretraining with reconstruction only.
+\end{itemize}
+Each checkpoint was fine-tuned with the Cell-JEPA recipe on Adamson and Replogle (screen tier: 3 epochs $\times$ 48k cells; long tier: 4 full epochs; single seed).
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+ & Adamson test & \multicolumn{3}{c}{Replogle test (103 genes), long tier}\\
+\cmidrule(lr){3-5}
+Arm (long tier) & delta RMSE\down & delta RMSE\down & ID pct\up & Top-1\\
+\midrule
+\textbf{\code{no\_jepa} (control)} & \textbf{0.0684} & \textbf{0.0780} & \textbf{0.695} & \textbf{0.146}\\
+\code{base\_center} & 0.0709 & 0.0785 & 0.685 & 0.087\\
+\code{unit\_program} & 0.0724 & 0.0789 & 0.669 & 0.107\\
+\code{ratio\_30} & 0.0745 & 0.0786 & 0.692 & 0.107\\
+\code{target\_faithful} & 0.0696 & 0.0786 & 0.684 & 0.107\\
+linear (PCA) baseline & 0.0575 & 0.0755 & 0.542 & 0.010\\
+\bottomrule
+\end{tabular}
+\end{center}
+\textbf{No knob beats the no-JEPA control} on either dataset or metric; all JEPA variants land within $\sim$0.02 ID pct of each other, inside the CIs ($\pm 0.06$). The screen tier says the same (no\_jepa 0.692 / top-1 0.146 is top). A matched blood-corpus version (\code{diag/launch\_blood\_knobs.py}, scGPT FT recipe so the only JEPA is in pretraining) is partially complete: no-JEPA control 0.717 vs JEPA baseline 0.710 ID pct. Teacher spread confirms the variants did not collapse (0.020--0.029), except \code{faithful} trending low (0.013), as A19 predicted. Interpretation: the knobs change \emph{how} the model is invariant, not \emph{whether}; none recovers the within-cell-type sensitivity that perturbation tasks need.
+
+%=====================================================================
+\section{Putting it together}
+
+\subsection{Scoreboard}
+\begin{center}\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{4.3cm}>{\raggedright\arraybackslash}p{3.4cm}X}
+\toprule
+Question & Answer & Evidence\\
+\midrule
+Does JEPA beat matched scGPT at cell-type embeddings? & \textbf{Yes, clearly} & Task 2 +0.23, Task 1 +0.20 AvgBIO (3 seeds)\\
+Does any model beat PCA at cell-type embeddings? & \textbf{No} & PCA 0.773 vs best model 0.709 (public scGPT)\\
+Does anything deep beat linear on delta RMSE? & \textbf{No} & 0.058 vs $\ge$0.068 (Adamson); 0.0755 vs $\ge$0.078 (Replogle)\\
+Do deep models beat PCA at identifying the knocked-down gene? & \textbf{Yes} & Replogle ID pct 0.78 vs 0.54, CIs exclude 0\\
+Is that from the transformer or just gene vectors? & Partly gene vectors; the model adds top-of-list precision & ridge on gene vectors 0.675; top-1 6--7$\times$ better with the model\\
+Does JEPA help perturbation identification? & \textbf{No} (pretraining, FT, 10 knobs) & all matched differences $\approx$0 or negative\\
+Why not? & JEPA embeddings are invariant to within-type shifts & real-cell ID pct 0.685 (JEPA) vs 0.91--0.94 (scGPT)\\
+Does the paper's $\Delta$-metric drop replicate? & No & ours JEPA slightly better on $\Delta$; metric definition unclear\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{The impact, honestly framed}
+\begin{enumerate}
+\item \textbf{A replication with the missing baseline.} We independently confirm Cell-JEPA's main claim (JEPA $>$ scGPT for cell-type embeddings, same direction and size) and show the comparison the paper omitted: PCA beats both. Anyone using these embeddings for clustering should compare against PCA first.
+\item \textbf{Mechanistic negative result.} JEPA's strength (invariance) and its weakness on perturbations are the same property. We measured it directly, and showed that masking/target changes do not undo it. The \emph{same} representation property that wins Task 2 loses perturbation retrieval.
+\item \textbf{A metric argument with teeth.} Delta RMSE rewards predicting the average response; a ranking/identification metric matches the lab decision (``what to validate next''). Under it, foundation models do beat PCA, which reverses the field's usual negative headline on this axis.
+\item \textbf{Engineering lessons} worth sharing: the scGPT plateau is an optimisation problem (fix with lr $3\times10^{-5}$ or warmup); one seed is not evidence; teacher spread must be logged; outdated gene symbols silently break perturbation models; Blackwell needs a torchtext shim.
+\end{enumerate}
+
+\subsection{What we must not claim}
+\begin{itemize}
+\item Not an exact reproduction (no official code; lr deviation; unsupervised ECS; our metric scale differs from the paper's).
+\item No ``JEPA helps perturbation prediction'' claim of any kind.
+\item No ``beats PCA'' claim for clustering; the ``beats PCA'' claim is for \emph{identification on Replogle} only.
+\item Small $n$: 22 Adamson genes, 31 validation / 103 test Replogle genes, mostly 1--2 seeds; bootstrap CIs cover gene resampling, not seed variance. One cell line (K562), single-gene knockdowns, Replogle restricted to targets among measured genes (412/1,092).
+\item The inverse-retrieval database is 22--103 candidates; a real search over thousands will be harder. Connectivity Map / LINCS is the incumbent for signature search.
+\end{itemize}
+
+\subsection{Likely judge questions}
+\begin{description}[style=nextline,leftmargin=1em,font=\normalfont\bfseries]
+\item[Why didn't you just beat scGPT and stop?] Because published benchmarks show deep models routinely lose to linear/PCA baselines; beating scGPT alone proves nothing (Sec.~\ref{sec:pca}).
+\item[Your kidney scGPT is far worse than the paper's (0.375 vs 0.529). Is the replication fair?] Both arms share data, schedule, lr, seed and code; only the objective differs. The relative gap matches the paper; absolute values differ by lr deviation and unknown details.
+\item[Why lr $3\times10^{-5}$?] At $10^{-4}$, plain scGPT failed 0/4 seeds; comparing a working JEPA to a broken scGPT would inflate JEPA. Warmup at $10^{-4}$ also works and is kept as a backup.
+\item[Is the identification win just scGPT's gene vectors?] On ID percentile, mostly yes (0.675 with ridge). On top-1/top-3 and neighbour ranking, the fine-tuned model is far better, with CIs excluding 0; with the contrastive loss it also beats gene vectors on ID percentile (+0.11).
+\item[Did anything leak?] Splits are by gene with fixed hashes; teacher targets and the retrieval gene panel use training data only; checkpoint selection is on validation; test is scored once. Blood corpus was screened for PBMC-10K overlap.
+\end{description}
+
+%=====================================================================
+\section{Branch map and who did what}
+\begin{center}\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{4.6cm}X}
+\toprule
+Branch & Contents\\
+\midrule
+\code{main} (origin) & Luke Sanborn: Track B pipeline (data contract, baselines, scGPT$\pm$JEPA aux, report/demo), Track A units (Census cache, pretraining objectives, Cell-JEPA FT recipe, GEARS metrics), \code{docs/use\_case\_map.md}, \code{docs/clustering\_finding.md} (clustering, precision@k, inverse retrieval).\\
+\code{luke-jepa-variants} & JEPA collapse variants \code{faithful/center/vicreg/token} + pretraining ablations.\\
+\code{track-a-fixes} & 4-epoch schedule fix, paper-matched \code{scgpt\_paper} FT arm, merge of the variants.\\
+\code{dangelo/establishing-baseline} & Vincent D'Angelo: \code{attempts.md} A1--A25 (plateau/collapse diagnosis, lr fix, Tasks 1--3, retrieval A16--A25, Replogle, blood pretraining, Step 2 screen, ladder figure), \code{baseline\_checklist.md}, \code{experiment.md}, \code{docs/checkpoints.md}.\\
+\code{dangelo/latent-retrieval} & A26 latent-space retrieval and the JEPA invariance finding.\\
+\code{worker/init-ckpt}, \code{worktree-agent-*} & Merged sub-units: continued pretraining from a checkpoint, CI retrieval, Replogle data contract, 2M blood cache.\\
+\code{rhea/tweak-model-knobs} (local, uncommitted) & Masking/target knobs sweep: \code{src/track\_a/masking.py}, \code{tests/test\_masking.py}, launch/watch scripts, \code{diag/results/model\_knobs\_*}, \code{blood\_knobs\_partial\_*}.\\
+\bottomrule
+\end{tabularx}
+\end{center}
+\textbf{Where to look:} run log \code{attempts.md}; replication contract and deviations \code{docs/track\_a.md}; reusable checkpoints \code{docs/checkpoints.md} (Modal volume \code{jepa-perturb}, under \code{/vol/trackA/checkpoints/}); ranked follow-up ideas \code{experiment.md}.
+
+\subsection*{Glossary}
+\small
+\textbf{AvgBIO}: mean of NMI, ARI, ASW for cell-type clustering. \textbf{bins50}: per-cell 50-quantile value binning (scGPT input). \textbf{\code{<cls>}}: summary token whose output is the cell embedding. \textbf{Delta / $\Delta$}: perturbed mean minus control mean. \textbf{DE20}: the 20 most differentially expressed genes for a perturbation. \textbf{ECS}: elastic cell similarity loss. \textbf{EMA}: exponential moving average (teacher update). \textbf{GEARS split}: gene-level train/val/test split from the GEARS package. \textbf{ID percentile}: rank percentile of the correct gene in retrieval (0.5 chance). \textbf{InfoNCE}: contrastive loss over a positive and many negatives. \textbf{Recon}: masked-value reconstruction MSE on bins (lower is better; $\sim$35 means ``stuck''). \textbf{Teacher spread}: std of teacher cell embeddings; collapse diagnostic.
+
+\end{document}

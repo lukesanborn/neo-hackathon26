@@ -1,0 +1,222 @@
+{
+ "base_center": {
+  "pretrain": "completed",
+  "val_recon": 14.999630622206887,
+  "mask_frac": 0.14976844534220618,
+  "teacher_spread": 0.017705268051940948,
+  "jepa_loss": 0.045020399265922606,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07911306727634407,
+    "delta_pearson": 0.3525033276950948,
+    "de20_delta_pearson": 0.4789316908535838,
+    "val_delta_rmse": 0.08797375413415649,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07911306727634407,
+  "val_delta_rmse": 0.08797375413415649,
+  "delta_pearson": 0.3525033276950948,
+  "n_seeds_done": 1
+ },
+ "no_jepa": {
+  "pretrain": "completed",
+  "val_recon": 14.408065095537998,
+  "mask_frac": 0.14976844534220618,
+  "teacher_spread": null,
+  "jepa_loss": null,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07933311549853882,
+    "delta_pearson": 0.3584466867289409,
+    "de20_delta_pearson": 0.5115544020033336,
+    "val_delta_rmse": 0.08828894084994018,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07933311549853882,
+  "val_delta_rmse": 0.08828894084994018,
+  "delta_pearson": 0.3584466867289409,
+  "n_seeds_done": 1
+ },
+ "unit_program": {
+  "pretrain": "completed",
+  "val_recon": 14.683802075656047,
+  "mask_frac": 0.20940649496080627,
+  "teacher_spread": 0.019727364357095212,
+  "jepa_loss": 0.04862675775075331,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07843520516177949,
+    "delta_pearson": 0.37602526111980317,
+    "de20_delta_pearson": 0.5053920552321267,
+    "val_delta_rmse": 0.08618855709687381,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07843520516177949,
+  "val_delta_rmse": 0.08618855709687381,
+  "delta_pearson": 0.37602526111980317,
+  "n_seeds_done": 1
+ },
+ "unit_pathway": {
+  "pretrain": "completed",
+  "val_recon": 16.48316538030867,
+  "mask_frac": 0.1563998564057502,
+  "teacher_spread": 0.016702404944226146,
+  "jepa_loss": 0.045670831692405045,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07862551884782083,
+    "delta_pearson": 0.3618944172273783,
+    "de20_delta_pearson": 0.516450304979262,
+    "val_delta_rmse": 0.08803195206597615,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07862551884782083,
+  "val_delta_rmse": 0.08803195206597615,
+  "delta_pearson": 0.3618944172273783,
+  "n_seeds_done": 1
+ },
+ "unit_topexpr": {
+  "pretrain": "completed",
+  "val_recon": 1.784227919335178,
+  "mask_frac": 0.14976844534220618,
+  "teacher_spread": 0.01771646674023941,
+  "jepa_loss": 0.048982385313138366,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07890499467367905,
+    "delta_pearson": 0.38434001696651204,
+    "de20_delta_pearson": 0.5158922893017671,
+    "val_delta_rmse": 0.08778657714277896,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07890499467367905,
+  "val_delta_rmse": 0.08778657714277896,
+  "delta_pearson": 0.38434001696651204,
+  "n_seeds_done": 1
+ },
+ "ratio_30": {
+  "pretrain": "completed",
+  "val_recon": 15.033258671872773,
+  "mask_frac": 0.2997797864303434,
+  "teacher_spread": 0.01904071809258312,
+  "jepa_loss": 0.041854951123241335,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07856301754193437,
+    "delta_pearson": 0.37254225687036163,
+    "de20_delta_pearson": 0.5154982793671228,
+    "val_delta_rmse": 0.08786159508194868,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07856301754193437,
+  "val_delta_rmse": 0.08786159508194868,
+  "delta_pearson": 0.37254225687036163,
+  "n_seeds_done": 1
+ },
+ "ratio_50": {
+  "pretrain": "completed",
+  "val_recon": 15.221964569116057,
+  "mask_frac": 0.4998633711429138,
+  "teacher_spread": 0.020551485649775714,
+  "jepa_loss": 0.04482106043724343,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07882514700704314,
+    "delta_pearson": 0.35958540129730504,
+    "de20_delta_pearson": 0.5098790427337152,
+    "val_delta_rmse": 0.0879345562768915,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07882514700704314,
+  "val_delta_rmse": 0.0879345562768915,
+  "delta_pearson": 0.35958540129730504,
+  "n_seeds_done": 1
+ },
+ "ratio_80": {
+  "pretrain": "completed",
+  "val_recon": 15.465391427641881,
+  "mask_frac": 0.7998056834032552,
+  "teacher_spread": 0.02298951894044876,
+  "jepa_loss": 0.06667286821175367,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07969618096248907,
+    "delta_pearson": 0.3744522592196146,
+    "de20_delta_pearson": 0.5141991585788279,
+    "val_delta_rmse": 0.08852857307908583,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07969618096248907,
+  "val_delta_rmse": 0.08852857307908583,
+  "delta_pearson": 0.3744522592196146,
+  "n_seeds_done": 1
+ },
+ "target_token": {
+  "pretrain": "completed",
+  "val_recon": 14.53130702968318,
+  "mask_frac": 0.14976844534220618,
+  "teacher_spread": 0.0066462165414122865,
+  "jepa_loss": 0.0024850444169715047,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07821961419321062,
+    "delta_pearson": 0.36366788357200813,
+    "de20_delta_pearson": 0.49986705854360675,
+    "val_delta_rmse": 0.08721899520178003,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07821961419321062,
+  "val_delta_rmse": 0.08721899520178003,
+  "delta_pearson": 0.36366788357200813,
+  "n_seeds_done": 1
+ },
+ "target_faithful": {
+  "pretrain": "completed",
+  "val_recon": 14.438415822099476,
+  "mask_frac": 0.14976844534220618,
+  "teacher_spread": 0.0034155629909946583,
+  "jepa_loss": 0.0002801205264404416,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07976243697805185,
+    "delta_pearson": 0.3695170531780287,
+    "de20_delta_pearson": 0.5119735888610044,
+    "val_delta_rmse": 0.08742242920794982,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07976243697805185,
+  "val_delta_rmse": 0.08742242920794982,
+  "delta_pearson": 0.3695170531780287,
+  "n_seeds_done": 1
+ },
+ "target_token_program": {
+  "pretrain": "completed",
+  "val_recon": 14.171269162409713,
+  "mask_frac": 0.20940649496080627,
+  "teacher_spread": 0.005816881253849715,
+  "jepa_loss": 0.0021655516684404574,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07864969066022602,
+    "delta_pearson": 0.35336495131096207,
+    "de20_delta_pearson": 0.4899070910890362,
+    "val_delta_rmse": 0.08650131818827858,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07864969066022602,
+  "val_delta_rmse": 0.08650131818827858,
+  "delta_pearson": 0.35336495131096207,
+  "n_seeds_done": 1
+ }
+}

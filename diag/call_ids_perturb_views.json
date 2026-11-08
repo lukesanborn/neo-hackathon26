@@ -1,0 +1,14 @@
+{
+ "pretrain|pv_no_jepa": "fc-01M6WVNEMD1VQRRANJDEB7RX2K",
+ "pretrain|pv_same_cell": "fc-01M6WVNEQQMDADFAAYX119ECJ6",
+ "pretrain|pv_pair1": "fc-01M6WVNEV2EYM8FY9DVWVXT84G",
+ "pretrain|pv_pair4": "fc-01M6WVNEYRR3HWCWGTTAES53QV",
+ "finetune|pv_no_jepa|s1": "fc-01M6WW8E40DX7KPW1FY50QFTFV",
+ "finetune|pv_no_jepa|s2": "fc-01M6WW8E7ZGRJAVAGH415X00V4",
+ "finetune|pv_same_cell|s1": "fc-01M6WWC6MFNW7CMR563VCFMAEQ",
+ "finetune|pv_same_cell|s2": "fc-01M6WWC6QZJDMHNADGKZQVJQJM",
+ "finetune|pv_pair1|s1": "fc-01M6WWE25Y297TRFKBC3T0QHV5",
+ "finetune|pv_pair1|s2": "fc-01M6WWE29FCV4SGJ8KYKW2ZFJ7",
+ "finetune|pv_pair4|s1": "fc-01M6WWQ974KWJBZJ7MSXFZ9K88",
+ "finetune|pv_pair4|s2": "fc-01M6WWQ9AJPYPYHR9MT4GV2A6D"
+}

@@ -1,0 +1,218 @@
+{
+ "base_center": {
+  "pretrain": "completed",
+  "val_recon": 15.657955308799071,
+  "mask_frac": 0.14976844534220618,
+  "teacher_spread": 0.027464398415759206,
+  "jepa_loss": 0.09079916786868125,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07847014406368567,
+    "delta_pearson": 0.3855585698666062,
+    "de20_delta_pearson": 0.5311966161746415,
+    "val_delta_rmse": 0.0864254347558451,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07847014406368567,
+  "val_delta_rmse": 0.0864254347558451,
+  "delta_pearson": 0.3855585698666062,
+  "n_seeds_done": 1
+ },
+ "no_jepa": {
+  "pretrain": "completed",
+  "val_recon": 14.01135389002814,
+  "mask_frac": 0.14976844534220618,
+  "teacher_spread": null,
+  "jepa_loss": null,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07802801902044537,
+    "delta_pearson": 0.3685003258071738,
+    "de20_delta_pearson": 0.5122145638637833,
+    "val_delta_rmse": 0.08753436215290321,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07802801902044537,
+  "val_delta_rmse": 0.08753436215290321,
+  "delta_pearson": 0.3685003258071738,
+  "n_seeds_done": 1
+ },
+ "unit_program": {
+  "pretrain": "completed",
+  "val_recon": 15.048044055603969,
+  "mask_frac": 0.20940649496080627,
+  "teacher_spread": 0.02736762643326074,
+  "jepa_loss": 0.08322737528942525,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07893275150374883,
+    "delta_pearson": 0.3826747079763528,
+    "de20_delta_pearson": 0.49792272195465764,
+    "val_delta_rmse": 0.0871376605323175,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07893275150374883,
+  "val_delta_rmse": 0.0871376605323175,
+  "delta_pearson": 0.3826747079763528,
+  "n_seeds_done": 1
+ },
+ "unit_pathway": {
+  "pretrain": "completed",
+  "val_recon": 18.063827472622297,
+  "mask_frac": 0.1563998564057502,
+  "teacher_spread": 0.027633129619061947,
+  "jepa_loss": 0.07996221259236336,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.08002412520613726,
+    "delta_pearson": 0.3716860934983137,
+    "de20_delta_pearson": 0.5064637254997304,
+    "val_delta_rmse": 0.08788025386856697,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.08002412520613726,
+  "val_delta_rmse": 0.08788025386856697,
+  "delta_pearson": 0.3716860934983137,
+  "n_seeds_done": 1
+ },
+ "unit_topexpr": {
+  "pretrain": "completed",
+  "val_recon": 1.8519682242970779,
+  "mask_frac": 0.14976844534220618,
+  "teacher_spread": 0.02735278563341126,
+  "jepa_loss": 0.06908388156443834,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.08027248041877517,
+    "delta_pearson": 0.371275056329106,
+    "de20_delta_pearson": 0.5174526901461897,
+    "val_delta_rmse": 0.08830145845324264,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.08027248041877517,
+  "val_delta_rmse": 0.08830145845324264,
+  "delta_pearson": 0.371275056329106,
+  "n_seeds_done": 1
+ },
+ "ratio_30": {
+  "pretrain": "completed",
+  "val_recon": 15.227786472730775,
+  "mask_frac": 0.2997797864303434,
+  "teacher_spread": 0.027002170274499804,
+  "jepa_loss": 0.06370933185098693,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07857801063742241,
+    "delta_pearson": 0.37083384302339434,
+    "de20_delta_pearson": 0.528422061861523,
+    "val_delta_rmse": 0.08693180676969779,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07857801063742241,
+  "val_delta_rmse": 0.08693180676969779,
+  "delta_pearson": 0.37083384302339434,
+  "n_seeds_done": 1
+ },
+ "ratio_50": {
+  "pretrain": "completed",
+  "val_recon": 15.225939610965845,
+  "mask_frac": 0.4998633711429138,
+  "teacher_spread": 0.028689766593743116,
+  "jepa_loss": 0.061337009246926755,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07950337233102014,
+    "delta_pearson": 0.37546162191123084,
+    "de20_delta_pearson": 0.4817636655416444,
+    "val_delta_rmse": 0.08845504050115978,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07950337233102014,
+  "val_delta_rmse": 0.08845504050115978,
+  "delta_pearson": 0.37546162191123084,
+  "n_seeds_done": 1
+ },
+ "ratio_80": {
+  "pretrain": "completed",
+  "val_recon": 15.117068909067578,
+  "mask_frac": 0.7998056834032552,
+  "teacher_spread": 0.028426567325368524,
+  "jepa_loss": 0.087248491239734,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.08072712745784384,
+    "delta_pearson": 0.364802282764474,
+    "de20_delta_pearson": 0.5173374597136255,
+    "val_delta_rmse": 0.08760012452389943,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.08072712745784384,
+  "val_delta_rmse": 0.08760012452389943,
+  "delta_pearson": 0.364802282764474,
+  "n_seeds_done": 1
+ },
+ "target_token": {
+  "pretrain": "completed",
+  "val_recon": 14.744201800949362,
+  "mask_frac": 0.14976844534220618,
+  "teacher_spread": 0.02030777238542214,
+  "jepa_loss": 0.03443596960278228,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07851130112082101,
+    "delta_pearson": 0.3819881434126983,
+    "de20_delta_pearson": 0.5224176756167935,
+    "val_delta_rmse": 0.08797514654459433,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07851130112082101,
+  "val_delta_rmse": 0.08797514654459433,
+  "delta_pearson": 0.3819881434126983,
+  "n_seeds_done": 1
+ },
+ "target_faithful": {
+  "pretrain": "completed",
+  "val_recon": 14.317077174728555,
+  "mask_frac": 0.14976844534220618,
+  "teacher_spread": 0.012912099715322256,
+  "jepa_loss": 0.007634775422047824,
+  "seeds": {
+   "1": {
+    "delta_rmse": 0.07859949115828171,
+    "delta_pearson": 0.3709930526123202,
+    "de20_delta_pearson": 0.5151348172494817,
+    "val_delta_rmse": 0.08623600014183477,
+    "status": "completed"
+   }
+  },
+  "delta_rmse": 0.07859949115828171,
+  "val_delta_rmse": 0.08623600014183477,
+  "delta_pearson": 0.3709930526123202,
+  "n_seeds_done": 1
+ },
+ "target_token_program": {
+  "pretrain": "completed",
+  "val_recon": 14.2023942686522,
+  "mask_frac": 0.20940649496080627,
+  "teacher_spread": 0.01984888454899192,
+  "jepa_loss": 0.03281290453742258,
+  "seeds": {
+   "1": {
+    "status": "-"
+   }
+  },
+  "delta_rmse": null,
+  "val_delta_rmse": null,
+  "delta_pearson": null,
+  "n_seeds_done": 0
+ }
+}
