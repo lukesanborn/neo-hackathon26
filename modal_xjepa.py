@@ -69,6 +69,48 @@ def spawn_finetunes(ckpt: str, adamson_methods=("scgpt_paper", "celljepa"), repl
     return ids
 
 
+STEP2_EXP = "replogle_k562_v1"     # A25 Step 2 screen: validation-selected, retrieval loss {off,on}
+BLOOD = f"{VOL}/trackA/blood_marrow_census_2023-05-15_2M"
+WHOLEBODY = f"{VOL}/trackA/wholebody_census_2023-05-15_3M"
+# A23 recipe (continued pretraining from public scGPT) with the X1 objective swapped in
+CONT = {"epochs": 2, "batch_size": 32, "lr": 3e-5, "max_minutes": 600.0, "seed": 0, "ema_momentum": 0.996,
+        "init_ckpt": "scGPT_human", "mask_ratio": 0.25}
+
+
+def spawn_step2(ckpt: str, start: str, seeds=(1, 2)) -> dict:
+    """A25 grid for one starting checkpoint: {scgpt_paper, celljepa} x retr {0,1} x seeds, bins50 inputs,
+    selection by validation ID percentile. Run dirs runs/<method>_s<seed>_s2<start>_r<retr>."""
+    fn = modal.Function.from_name("jepa-perturb", "train_blackwell").with_options(gpu="B300", max_containers=24)
+    ids = {}
+    for method in ("scgpt_paper", "celljepa"):
+        for retr in (0, 1):
+            for seed in seeds:
+                ids[f"step2 {start} {method} retr{retr} s{seed}"] = fn.spawn(
+                    exp_id=STEP2_EXP, method=method, seed=seed, epochs=15, aux_weight=0.5, max_minutes=150.0,
+                    tag=f"s2{start}_r{retr}", ckpt=f"{CKPTS}/{ckpt}", input_transform="bins50",
+                    cfg_overrides={"selection": "retrieval", "retr_weight": float(retr)}).object_id
+    return ids
+
+
+@app.function(image=image, gpu="B300", volumes={VOL: vol}, cpu=8, memory=98304, timeout=24 * 3600)
+def pretrain_cont(variant: str, tag: str, overrides: dict, cache: str, start: str) -> dict:
+    """Continued pretraining from public scGPT on another corpus; on completion chains the A25-style Step 2
+    fine-tunes for the exported checkpoint (start = short name used in the run tags)."""
+    from src.track_a.pretrain import PretrainConfig, run_pretraining
+
+    vol.reload()
+    cfg = PretrainConfig(objective="jepa", jepa_variant=variant, **overrides)
+    ck = f"jepa_kidney_{tag}"   # export naming convention (as A23); the tag marks the corpus
+    s = _plain(run_pretraining(cfg, cache, VOCAB, os.path.join(RUNS, f"jepa_{tag}"), os.path.join(CKPTS, ck),
+                               commit=vol.commit))
+    if s["status"] == "completed":
+        s["chained_finetunes"] = spawn_grid(f"{CKPTS}/{ck}", start)
+        with open(os.path.join(RUNS, f"jepa_{tag}", "chained_calls.json"), "w") as f:
+            json.dump(s["chained_finetunes"], f, indent=1)
+        vol.commit()
+    return s
+
+
 @app.function(image=image, gpu="B300", volumes={VOL: vol}, cpu=8, memory=65536, timeout=24 * 3600)
 def pretrain(variant: str, tag: str, overrides: dict, chain: bool = False) -> dict:
     from src.track_a.pretrain import PretrainConfig, run_pretraining
@@ -90,10 +132,11 @@ def pretrain(variant: str, tag: str, overrides: dict, chain: bool = False) -> di
     return s
 
 
-@app.function(image=image, gpu="B300", volumes={VOL: vol}, memory=65536, timeout=4 * 3600, max_containers=24)
+@app.function(image=image, gpu="B300", volumes={VOL: vol}, memory=65536, timeout=4 * 3600, max_containers=40)
 def finetune(exp_id: str, method: str, seed: int, tag: str, ckpt: str, epochs: int = 15, aux_weight: float = 0.5,
-             max_minutes: float = 150.0, input_transform: str = "bins50") -> dict:
-    """Same body as jepa-perturb._train (src/train.py unchanged), in this app so its concurrency cap is ours."""
+             max_minutes: float = 150.0, input_transform: str = "bins50", cfg_overrides: dict | None = None) -> dict:
+    """Same body as jepa-perturb._train (src/train.py from this branch), in this app so its concurrency cap is
+    ours. ckpt: absolute dir or a name under /vol/checkpoints/."""
     from src.data import load_cache
     from src.train import TrainConfig, run_training
 
@@ -101,11 +144,51 @@ def finetune(exp_id: str, method: str, seed: int, tag: str, ckpt: str, epochs: i
     cfg_e = json.load(open(f"{VOL}/experiments/{exp_id}/experiment.json"))
     ds = load_cache(cfg_e["cache_dir"])
     cfg = TrainConfig(method=method, seed=seed, epochs=epochs, aux_weight=aux_weight, max_minutes=max_minutes,
-                      ckpt=ckpt, input_transform=input_transform, teacher_update="frozen", max_steps_per_epoch=None)
+                      ckpt=ckpt, input_transform=input_transform, teacher_update="frozen", max_steps_per_epoch=None,
+                      **(cfg_overrides or {}))
     run_dir = os.path.join(f"{VOL}/experiments/{exp_id}", "runs", f"{method}_s{seed}_{tag}")
     if os.path.exists(os.path.join(run_dir, "metrics.json")):
         raise FileExistsError(f"{run_dir} already completed")
-    return _plain(run_training(ds, ckpt, cfg, run_dir, commit=vol.commit))
+    cdir = ckpt if os.path.isabs(ckpt) else f"{VOL}/checkpoints/{ckpt}"
+    return _plain(run_training(ds, cdir, cfg, run_dir, commit=vol.commit))
+
+
+def spawn_grid(ckpt_path: str, start: str, input_transform: str = "bins50", seeds=(1, 2)) -> dict:
+    """A25 grid on THIS app's fine-tune function: {scgpt_paper, celljepa} x retr {0,1} x seeds, selection by
+    validation ID percentile. Run dirs runs/<method>_s<seed>_s2<start>_r<retr> in replogle_k562_v1."""
+    ids = {}
+    for method in ("scgpt_paper", "celljepa"):
+        for retr in (0, 1):
+            for seed in seeds:
+                ids[f"step2 {start} {method} retr{retr} s{seed}"] = finetune.spawn(
+                    STEP2_EXP, method, seed, f"s2{start}_r{retr}", ckpt_path, input_transform=input_transform,
+                    cfg_overrides={"selection": "retrieval", "retr_weight": float(retr)}).object_id
+    return ids
+
+
+@app.function(image=image, volumes={VOL: vol}, cpu=2, memory=8192, timeout=3600)
+def download_scgpt_model(folder_url: str, name: str) -> dict:
+    """gdown an official scGPT model-zoo folder to /vol/checkpoints/<name>; compare with scGPT_human."""
+    import hashlib
+    import subprocess
+
+    vol.reload()
+    out = f"{VOL}/checkpoints/{name}"
+    need = ["args.json", "best_model.pt", "vocab.json"]
+    if not all(os.path.exists(os.path.join(out, f)) for f in need):
+        os.makedirs(out, exist_ok=True)
+        subprocess.run(["gdown", "--folder", folder_url, "-O", out], check=True)
+        vol.commit()
+    h = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()[:16]  # noqa: E731
+    args = json.load(open(os.path.join(out, "args.json")))
+    ref = json.load(open(f"{VOL}/checkpoints/scGPT_human/args.json"))
+    v, vh = json.load(open(os.path.join(out, "vocab.json"))), json.load(open(VOCAB))
+    keys = ("embsize", "nheads", "d_hid", "nlayers", "n_layers_cls", "n_bins", "input_emb_style", "pad_value",
+            "mask_value", "fast_transformer", "no_cls", "data_source")
+    return {"files": sorted(os.listdir(out)), "sha": {f: h(os.path.join(out, f)) for f in need},
+            "args": {k: args.get(k) for k in keys}, "human_args": {k: ref.get(k) for k in keys},
+            "vocab_size": len(v), "vocab_identical_to_human": v == vh,
+            "n_genes_shared_with_human": len(set(v) & set(vh))}
 
 
 def spawn_extra_seeds(ckpt: str, seeds=(3,)) -> dict:

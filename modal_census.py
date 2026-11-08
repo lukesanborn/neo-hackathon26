@@ -32,7 +32,7 @@ APP_NAME = "jepa-census"
 VOL_PATH = "/vol"
 VOCAB_PATH = f"{VOL_PATH}/checkpoints/scGPT_human/vocab.json"
 # output dirs: src/track_a/census.py CORPORA[name]["out"] / ["smoke_out"]
-MAX_SHARD_CONTAINERS = 8
+MAX_SHARD_CONTAINERS = 40   # one container per shard for the 3M wholebody build (was 8)
 
 app = modal.App(APP_NAME)
 vol = modal.Volume.from_name("jepa-perturb")

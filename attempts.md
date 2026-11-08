@@ -608,6 +608,49 @@ Pretraining: both completed, 100,768 steps, ~85 min, 5.7–5.9 GB. Best val reco
 3. Gene-ID embeddings alone are not knockdown-informative for any kidney model.
 4. Next: (a) more Replogle seeds, or a wider candidate set, to resolve X1 vs scGPT; (b) X1 objective as continued pretraining from public scGPT (the strongest base in A16); (c) program probe through the predictor before judging X2's "explanations" use.
 
+## XC. X1 as continued pretraining from public scGPT + extra start points, A25 grid on Replogle (Nov 7, Mona)
+
+Code: `modal_xjepa.py` (`pretrain_cont`, `finetune`, `spawn_grid`, `download_scgpt_model`), `diag/wait_xcont.py`, new Census corpus `wholebody` (`src/track_a/census.py`). Results: `diag/results/XC_replogle_{val,test}_retrieval_ci.{md,json}` (scored with `diag/retrieval.py`, same as A22/A25).
+
+Arms (all fine-tuned with the A25 grid on `replogle_k562_v1`: {scgpt_paper, celljepa} × retrieval loss {0, 1} × seeds {1, 2}, selection by validation ID percentile):
+- **X1-blood** (`s2bijepa`): scGPT_human → X1 (mask 0.25) on the blood/marrow 2M cache, A23 schedule (2 × 61,875 steps, lr 3e-5, seed 0; init hash identical to A23). Best val recon 10.85.
+- **X1-wholebody** (`s2wijepa`): same, on a new **3M whole-body sample** (Census 2023-05-15, all healthy cells; 37.5M eligible, 441 datasets; 35% brain; 42% non-primary). 2 epochs × 1.98M cells, so steps match. Best val recon 19.13.
+- **Arm A** (`s2bbsijepa`): A23 blood-scGPT → X1 on blood (4 blood epochs in total). Best val recon 10.76.
+- **Arm B** (`s2offblood` log1p, `s2offbloodbins` bins50): official scGPT **blood** model (10.3M cells, model zoo; architecture = whole-human; 36,574-gene vocabulary, a subset of whole-human's), fine-tuned directly.
+- **public scGPT + bins50** (`s2pubbins`): separates A25's log1p-vs-bins50 confound.
+- No failures across 3 pretrainings + 48 fine-tunes.
+
+**Test, 103 genes, ID percentile** (mean of 2 seeds; config chosen on validation → its test score [95% CI]):
+
+| Start | sp r0 | sp r1 | cj r0 | cj r1 | avg of 4 | val-selected config → test | top-1 / top-3 / top-10 |
+|---|---|---|---|---|---|---|---|
+| **blood-scGPT (A23)** | 0.722 | **0.766** | 0.715 | 0.762 | **0.741** | cj r1 → **0.762** [0.72, 0.80] | 0.194 / 0.238 / 0.432 |
+| public scGPT bins50 | 0.705 | 0.760 | 0.697 | 0.760 | 0.731 | sp r1 → 0.760 [0.71, 0.81] | 0.204 / 0.252 / 0.422 |
+| blood-JEPA center (A23) | 0.711 | 0.748 | 0.719 | 0.730 | 0.727 | cj r1 → 0.730 | 0.194 / 0.252 / 0.388 |
+| public scGPT log1p (A25) | 0.720 | 0.751 | 0.689 | 0.733 | 0.723 | sp r1 → 0.751 [0.71, 0.79] | 0.214 / 0.277 / 0.442 |
+| **X1-blood** | 0.692 | 0.727 | 0.689 | 0.744 | 0.713 | cj r1 → 0.744 [0.70, 0.79] | 0.165 / 0.238 / 0.417 |
+| **X1-wholebody** | 0.694 | 0.730 | 0.690 | 0.728 | 0.711 | cj r1 → 0.728 | 0.204 / 0.267 / 0.417 |
+| official blood log1p / bins50 | 0.677 / 0.677 | 0.722 / 0.719 | 0.691 / 0.684 | 0.725 / 0.735 | 0.704 / 0.704 | | |
+| **Arm A** | 0.690 | 0.636 | 0.683 | 0.742 | 0.687 | cj r1 → 0.742 | 0.204 / 0.267 / 0.408 |
+| gene-vector ridge / linear / chance | | | | | | 0.675 / 0.542 / 0.500 | |
+
+Paired test differences (bootstrap over genes, average of the 4 configs):
+- **X1-blood − blood-scGPT: −0.028 [−0.046, −0.011]**
+- X1-blood − blood-JEPA: −0.014 [−0.032, +0.001]
+- X1-blood − public bins50: −0.018 [−0.036, −0.000]
+- X1-wholebody − X1-blood: −0.002 [−0.021, +0.016]
+- **Arm A − blood-scGPT: −0.054 [−0.073, −0.034]**
+- public bins50 − public log1p: +0.007 [−0.010, +0.025]
+- Best configs vs gene-vector ridge: +0.075 to +0.087 (CIs exclude 0).
+
+**Conclusions.**
+1. **X1 continued pretraining does not help; it slightly hurts.** It is worse than its matched twin blood-scGPT (same data, steps and init; only the objective differs) by 0.028 ID percentile, with the CI excluding 0. The validation lead (0.766 vs 0.757 avg, 31 genes) did not replicate on test: validation noise and selection.
+2. **More continued pretraining on the same blood cells overfits** (Arm A, −0.054). The official 10.3M-cell blood model is no better than whole-human.
+3. **Whole-body vs blood corpus makes no difference for X1** (−0.002).
+4. **bins50 vs log1p makes no real difference on test** (+0.007, n.s.), despite +0.02–0.04 on validation.
+5. **Best model on test:** blood-scGPT (A23) + Cell-JEPA FT + retrieval loss, **0.762**, tied with public scGPT + retrieval loss (0.751–0.760). The jump from A22's 0.680 comes from **the contrastive retrieval loss + validation selection (A24/A25)**, not from any pretraining objective. Every top config beats scGPT's gene vectors alone by ~0.08.
+6. Product takeaway: the reliable levers are a strong pretrained start (whole-human or blood-adapted) plus a retrieval-shaped fine-tune objective. Neither JEPA variant in pretraining (whole-cell `center` or gene-level X1) has improved identification once these are in place.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.

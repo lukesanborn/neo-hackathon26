@@ -4,6 +4,8 @@ Builds pretraining caches from CELLxGENE Census LTS release 2023-05-15. Corpora 
 
 * ``kidney`` (default): scGPT's kidney filter (scGPT's 814k-cell kidney corpus ~ Cell-JEPA's
   "800K kidney cells"), all matching cells (or the first ``max_cells`` by soma_joinid).
+* ``wholebody``: every healthy human cell (all tissues), a seeded random 3M sample: tissues in
+  proportion to the whole-human corpus scGPT_human was pretrained on (X1 continued pretraining).
 * ``blood_marrow``: healthy blood + bone marrow, a seeded random sample of 2M matching cells
   (sorted by soma_joinid after sampling), with the PBMC-10K evaluation datasets screened out
   (see ``leakage_check``). Used for continued pretraining of public scGPT_human.
@@ -72,6 +74,18 @@ CORPORA: dict[str, dict] = {
         "rationale": "In-domain continued pretraining of public scGPT_human for the PBMC (blood) "
                      "and K562 (leukemia, bone-marrow lineage) evaluations: healthy blood + bone "
                      "marrow, 2M-cell seeded random sample, PBMC-10K eval datasets screened out.",
+    },
+    "wholebody": {
+        "filter": "disease == 'normal' and suspension_type != 'na'",
+        "out": "/vol/trackA/wholebody_census_2023-05-15_3M",
+        "smoke_out": "/vol/smoke/census/wholebody_census_2023-05-15",
+        "max_cells": 3_000_000,
+        "sample": "random",
+        "sample_seed": 0,
+        "leakage_check": True,
+        "rationale": "Whole-body continued pretraining of public scGPT_human (X1 objective): all healthy "
+                     "human cells of the same Census release, 3M seeded random sample (tissue mix "
+                     "proportional to the whole-human corpus), PBMC-10K eval datasets screened out.",
     },
 }
 
