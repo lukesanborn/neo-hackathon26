@@ -1,0 +1,174 @@
+{
+ "T2 zeroshot scgpt_kidney_lr3e5": {
+  "AvgBIO": 0.37531963731502466,
+  "NMI": 0.4303005910466109,
+  "ARI": 0.22285244833891574,
+  "ASW": 0.4728058725595474,
+  "best_resolution": 1.1
+ },
+ "T2 zeroshot jepa_kidney_lr3e5": {
+  "AvgBIO": 0.6060674073993423,
+  "NMI": 0.6418763117582399,
+  "ARI": 0.5352301082518676,
+  "ASW": 0.6410958021879196,
+  "best_resolution": 0.1
+ },
+ "T2 zeroshot jepa_kidney_lr3e5_token": {
+  "AvgBIO": 0.428133856110886,
+  "NMI": 0.4629166454676514,
+  "ARI": 0.2857815841823551,
+  "ASW": 0.5357033386826515,
+  "best_resolution": 0.3
+ },
+ "T2 zeroshot jepa_kidney_lr3e5_center": {
+  "AvgBIO": 0.4713337731718608,
+  "NMI": 0.5183016200403562,
+  "ARI": 0.3888271754335438,
+  "ASW": 0.5068725240416825,
+  "best_resolution": 0.3
+ },
+ "T3 adamson scgpt_lr3e5 scgpt_paper s1": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 2,
+  "delta_rmse": 0.0791150277187428,
+  "delta_pearson": 0.5562007266525625,
+  "de20_delta_pearson": 0.745739464639703,
+  "minutes": 28.1
+ },
+ "T3 adamson scgpt_lr3e5 scgpt_paper s2": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 4,
+  "delta_rmse": 0.0793345349300198,
+  "delta_pearson": 0.5539349284754365,
+  "de20_delta_pearson": 0.7359599164449147,
+  "minutes": 28.4
+ },
+ "T3 adamson scgpt_lr3e5 celljepa s1": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 5,
+  "delta_rmse": 0.07939189091178143,
+  "delta_pearson": 0.5494093157197999,
+  "de20_delta_pearson": 0.7536537566842743,
+  "minutes": 37.5
+ },
+ "T3 adamson scgpt_lr3e5 celljepa s2": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 4,
+  "delta_rmse": 0.080791788136172,
+  "delta_pearson": 0.5615206950818202,
+  "de20_delta_pearson": 0.7384034656372029,
+  "minutes": 37.5
+ },
+ "T3 adamson jepa_lr3e5 scgpt_paper s1": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 13,
+  "delta_rmse": 0.07836622884276606,
+  "delta_pearson": 0.5364072188280417,
+  "de20_delta_pearson": 0.7338576271691923,
+  "minutes": 28.3
+ },
+ "T3 adamson jepa_lr3e5 scgpt_paper s2": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 9,
+  "delta_rmse": 0.07414084211658871,
+  "delta_pearson": 0.613023635120409,
+  "de20_delta_pearson": 0.7690777452100236,
+  "minutes": 28.3
+ },
+ "T3 adamson jepa_lr3e5 celljepa s1": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 1,
+  "delta_rmse": 0.08003375723070441,
+  "delta_pearson": 0.5505901642810138,
+  "de20_delta_pearson": 0.7384525036130853,
+  "minutes": 37.4
+ },
+ "T3 adamson jepa_lr3e5 celljepa s2": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 9,
+  "delta_rmse": 0.07582665501598812,
+  "delta_pearson": 0.5954944021703154,
+  "de20_delta_pearson": 0.7756077163548689,
+  "minutes": 37.5
+ },
+ "T3 adamson jepa_lr3e5_token scgpt_paper s1": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 10,
+  "delta_rmse": 0.07906717488531655,
+  "delta_pearson": 0.5406728186961359,
+  "de20_delta_pearson": 0.7408907822240959,
+  "minutes": 28.3
+ },
+ "T3 adamson jepa_lr3e5_token scgpt_paper s2": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 2,
+  "delta_rmse": 0.07906140158683467,
+  "delta_pearson": 0.516342428419548,
+  "de20_delta_pearson": 0.7248420160527174,
+  "minutes": 28.1
+ },
+ "T3 adamson jepa_lr3e5_token celljepa s1": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 7,
+  "delta_rmse": 0.07664131465064343,
+  "delta_pearson": 0.5546532791381821,
+  "de20_delta_pearson": 0.7313727965949343,
+  "minutes": 37.9
+ },
+ "T3 adamson jepa_lr3e5_token celljepa s2": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 9,
+  "delta_rmse": 0.07197601062076296,
+  "delta_pearson": 0.5985888922066122,
+  "de20_delta_pearson": 0.769900739567478,
+  "minutes": 39.8
+ },
+ "T3 adamson jepa_lr3e5_center scgpt_paper s1": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 5,
+  "delta_rmse": 0.07485986525293167,
+  "delta_pearson": 0.5385480256596705,
+  "de20_delta_pearson": 0.7279384696728013,
+  "minutes": 29.5
+ },
+ "T3 adamson jepa_lr3e5_center scgpt_paper s2": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 9,
+  "delta_rmse": 0.07315384345450197,
+  "delta_pearson": 0.5857682361366704,
+  "de20_delta_pearson": 0.7498309696732206,
+  "minutes": 28.1
+ },
+ "T3 adamson jepa_lr3e5_center celljepa s1": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 2,
+  "delta_rmse": 0.07429488395821367,
+  "delta_pearson": 0.5910739401102811,
+  "de20_delta_pearson": 0.7658023600173195,
+  "minutes": 37.4
+ },
+ "T3 adamson jepa_lr3e5_center celljepa s2": {
+  "status": "completed",
+  "epochs": 15,
+  "selected_epoch": 9,
+  "delta_rmse": 0.07852192996635383,
+  "delta_pearson": 0.5523223159966795,
+  "de20_delta_pearson": 0.7164919471200811,
+  "minutes": 39.6
+ }
+}

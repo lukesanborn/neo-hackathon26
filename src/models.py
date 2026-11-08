@@ -62,13 +62,29 @@ HGNC_ALIASES = {
 }
 
 
-def gene_vocab_ids(gene_names: list[str], vocab: SimpleVocab) -> tuple[np.ndarray, dict]:
-    """Tutorial rule (genes absent from the vocab -> <pad>), after applying HGNC_ALIASES."""
+# Dataset-scoped renames (knockdown targets whose GEARS symbol is outdated; current HGNC symbol is
+# in the scGPT vocab). Kept out of HGNC_ALIASES because several of these genes are also in the
+# Adamson gene list, where they map to <pad>; adding them globally would change Adamson inputs.
+# build_cache records them in the cache manifest ("extra_hgnc_aliases"); the Trainer applies them.
+DATASET_HGNC_ALIASES = {
+    "adamson": {},
+    "replogle_k562_essential": {
+        "CCDC84": "CENATAC", "CD3EAP": "POLR1G", "EPRS": "EPRS1", "GARS": "GARS1", "IARS": "IARS1",
+        "NARS": "NARS1", "TWISTNB": "POLR1F",
+    },
+}
+
+
+def gene_vocab_ids(gene_names: list[str], vocab: SimpleVocab,
+                   extra_aliases: dict | None = None) -> tuple[np.ndarray, dict]:
+    """Tutorial rule (genes absent from the vocab -> <pad>), after applying HGNC_ALIASES
+    (+ dataset-scoped ``extra_aliases``)."""
+    aliases = {**HGNC_ALIASES, **(extra_aliases or {})}
     ids, applied, missing = [], {}, []
     for g in gene_names:
-        if g not in vocab and g in HGNC_ALIASES and HGNC_ALIASES[g] in vocab:
-            applied[g] = HGNC_ALIASES[g]
-            g = HGNC_ALIASES[g]
+        if g not in vocab and g in aliases and aliases[g] in vocab:
+            applied[g] = aliases[g]
+            g = aliases[g]
         if g in vocab:
             ids.append(vocab[g])
         else:
@@ -79,7 +95,7 @@ def gene_vocab_ids(gene_names: list[str], vocab: SimpleVocab) -> tuple[np.ndarra
     return np.array(ids, dtype=np.int64), info
 
 
-def build_scgpt(ckpt_dir: str, seed: int, dropout: float = 0.0):
+def build_scgpt(ckpt_dir: str, seed: int, dropout: float = 0.0, load: bool = True):
     from scgpt.model import TransformerGenerator
 
     args = load_ckpt_args(ckpt_dir)
@@ -100,6 +116,8 @@ def build_scgpt(ckpt_dir: str, seed: int, dropout: float = 0.0):
         pert_pad_id=PERT_PAD_ID,
         use_fast_transformer=False,
     )
+    if not load:   # A28 ablation: same architecture/vocab, seeded random weights (no pretraining)
+        return model, vocab, args, {"n_loaded": 0, "random_init": True}
     load_info = load_pretrained(model, os.path.join(ckpt_dir, "best_model.pt"))
     return model, vocab, args, load_info
 

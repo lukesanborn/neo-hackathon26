@@ -9,7 +9,11 @@ show Track B only in a separate "for context only" section.
 
 Pipeline: CELLxGENE Census 2023-05-15 kidney cells → matched kidney pretraining (JEPA objective
 and scGPT objective, identical schedule) → Adamson perturbation fine-tuning of each checkpoint with
-the `scgpt` and `celljepa` recipes (seeds 1, 2) → Track A report. Separately, we run the Cell-JEPA
+the `scgpt_paper` and `celljepa` recipes (seeds 1, 2) → Track A report. `scgpt_paper` is the
+paper's scGPT fine-tuning baseline (§2.5 / App. E.3: MSE + 0.8·ECS on `<cls>`) — the `celljepa`
+objective without the JEPA term, on the identical code path, init, pairing and RNG streams — so
+the two fine-tuning arms differ only in the JEPA loss. (Track B's `scgpt` method, MSE only and
+no `<cls>`, is unchanged.) Separately, we run the Cell-JEPA
 fine-tuning recipe on public `scGPT_human` (experiment `adamson_celljepa_public_v1`).
 
 ## Apps
@@ -47,7 +51,7 @@ modal run modal_track_a.py --stage census --census-stage smoke
 modal run modal_track_a.py --stage census --census-stage full
 
 # 3. pretraining pilot on B300 for both objectives: prints s/step, cells/s, projected hours and
-#    cost for the paper schedule (44 ep, bs 32) and alternatives, then STOPS
+#    cost for the paper schedule (4 ep, bs 32) and alternatives, then STOPS
 modal run modal_track_a.py --stage pilot
 
 # 4. decide ONE schedule for both objectives, record it in the deviation log below, then:
@@ -56,9 +60,11 @@ modal run --detach modal_track_a.py --stage pretrain --confirm-pretrain \
 #    prints the two FunctionCall ids and exits (use --wait yes to block); later:
 modal run modal_track_a.py --stage collect --call-ids <id1>,<id2>
 
-# 5. fine-tune: prepare(adamson_trackA_v1) then 2 checkpoints x {scgpt, celljepa} x seeds {1,2}
+# 5. fine-tune: prepare(adamson_trackA_v1) then 2 checkpoints x {scgpt_paper, celljepa} x seeds {1,2}
 #    = 8 runs on B300, max 4 concurrent; refuses until both checkpoints have args.json,
-#    best_model.pt, vocab.json
+#    best_model.pt, vocab.json. Redeploy jepa-perturb from this checkout first: preflight checks
+#    `scgpt_paper` against the LOCAL src/train.py METHODS, not the deployed app
+#    (`modal deploy modal_app.py`)
 modal run --detach modal_track_a.py --stage finetune
 
 # 6. Cell-JEPA fine-tuning recipe on public scGPT_human (separate experiment, seeds 1,2)
@@ -85,8 +91,8 @@ and `--pilot-kwargs '{...}'` (passed through verbatim), `--usd-per-gpu-hour`, `-
 /vol/trackA/checkpoints/{jepa,scgpt}_kidney/   args.json, best_model.pt, vocab.json
 /vol/experiments/adamson_trackA_v1/
   baselines/{no_change,training_mean,linear}/   same split (GEARS simulation seed 1) as Track B
-  runs/<method>_s<seed>_kidneyjepa_v1/          ckpt=/vol/trackA/checkpoints/jepa_kidney, input bins50
-  runs/<method>_s<seed>_kidneyscgpt_v1/         ckpt=/vol/trackA/checkpoints/scgpt_kidney, input bins50
+  runs/{scgpt_paper,celljepa}_s<seed>_kidneyjepa_v1/    ckpt=/vol/trackA/checkpoints/jepa_kidney, input bins50
+  runs/{scgpt_paper,celljepa}_s<seed>_kidneyscgpt_v1/   ckpt=/vol/trackA/checkpoints/scgpt_kidney, input bins50
   report_track_a/   results.md, report.json, results_*.csv, per_intervention_all.csv, run_status.csv,
                     track_a_delta_rmse.png
 /vol/experiments/adamson_celljepa_public_v1/runs/celljepa_s<seed>_v1/   public scGPT_human, log1p
@@ -98,10 +104,12 @@ for this experiment.
 
 ### Key comparison
 
-The paper's comparison: **kidney-JEPA pretraining + Cell-JEPA fine-tuning** vs **kidney-scGPT
-pretraining + scGPT fine-tuning** (matched schedule), plus baselines. The two cross arms
-(kidney-JEPA + scGPT FT, kidney-scGPT + Cell-JEPA FT) separate the pretraining and fine-tuning
-effects. We report our primary delta RMSE and, when `per_intervention.csv` has them, the GEARS
+The paper's comparison: **kidney-JEPA pretraining + Cell-JEPA fine-tuning** (`jepa_kidney/celljepa`)
+vs **kidney-scGPT pretraining + scGPT fine-tuning** (`scgpt_kidney/scgpt_paper`; matched schedule),
+plus baselines. As in the paper (§2.5), both fine-tuning objectives share MSE + 0.8·ECS on the
+student `<cls>`; `celljepa` adds only the 1.0·JEPA term. The two cross arms
+(`jepa_kidney/scgpt_paper`, `scgpt_kidney/celljepa`) separate the pretraining and fine-tuning
+(JEPA-term) effects. We report our primary delta RMSE and, when `per_intervention.csv` has them, the GEARS
 columns next to the published Adamson values:
 
 | | Pearson | Pearson DE | top-20 DE (non-dropout) | Δ Pearson | Δ Pearson DE | Δ top-20 DE |
@@ -114,9 +122,9 @@ against the PDF** before quoting.
 
 ## Cost / time notes
 
-* **Pretraining** (decided after the pilot): the paper's schedule is ≈ 814k cells × 44 epochs /
-  batch 32 ≈ **1.12M optimiser steps per model**, two models. The paper reports "about one day on
-  an A5000", which is hard to reconcile with 1.1M steps of a 12-layer scGPT; the pilot measures
+* **Pretraining** (decided after the pilot): the paper's schedule (App. E.1: "a total of 4 epochs") is
+  ≈ 814k cells × 4 epochs / batch 32 ≈ **102k optimiser steps per model**, two models — consistent
+  with the paper's "approximately one day on a single A5000 GPU" (≈ 0.85 s/step). The pilot measures
   s/step on B300 and prints projected hours and cost (both models) for the paper schedule and
   shorter alternatives. Cost uses an *assumed* `--usd-per-gpu-hour` (default 6.25) — verify on
   modal.com/pricing. Pretraining is never launched automatically.
@@ -132,7 +140,7 @@ against the PDF** before quoting.
 | EMA momentum (teacher) | Unspecified | 0.996 | I-JEPA / BYOL-style default |
 | Predictor width / depth | Unspecified | 2-layer MLP, hidden = d_model (512) | Smallest standard choice; matches embedding width |
 | Projector | Mentioned for fine-tuning | Projector used in fine-tuning only, not pretraining | Our reading of the method section |
-| ECS term | Supervised contrastive with cell-type positives | scGPT's unsupervised ECS, threshold 0.3 | Adamson (K562 only) has no cell-type labels to form positives |
+| ECS term | Supervised contrastive with cell-type positives; weight 0.8 in both the Cell-JEPA and the scGPT fine-tuning objectives (§2.5, App. E.3) | scGPT's unsupervised ECS, threshold 0.3, weight 0.8 on student `<cls>` in both `celljepa` and the baseline `scgpt_paper` (as the paper, the baseline also uses ECS) | Adamson (K562 only) has no cell-type labels to form positives |
 | Control ↔ perturbed pairing | Unspecified | Fixed per-seed random pairing (same in every arm) | Deterministic and matched across arms |
 | Fine-tuning input scale | Unspecified (bins vs log1p) | `bins50` for kidney checkpoints; `log1p` for public scGPT_human | Kidney models were pretrained on binned values; public run matches Track B |
 | 50 vs 51 bins | Ambiguous (n_bins 51 incl. zero vs 50 non-zero) | 50 non-zero bins + zero token (scGPT `n_bins=51` convention) | Matches scGPT preprocessing |
@@ -145,8 +153,8 @@ against the PDF** before quoting.
 | Gradient clipping | Not stated | Clip global norm 1.0 in pretraining and fine-tuning, both objectives | Stability with the 1000× JEPA weight; note it rescales most JEPA steps, applied identically to the baseline |
 | JEPA target spread | Not discussed | Monitored: `teacher_cls_std` (pretraining) and `teacher_cls_pairwise_cos` / `jepa_meanpred_baseline` (fine-tuning); real-data pilot checked before full pretraining | Smoke tests showed near-constant teacher `<cls>` embeddings (risk that the JEPA term is trivially satisfied) |
 | Split | Unspecified seed | GEARS `simulation` split, seed 1 (same as Track B) | Reproducible; baselines identical across tracks |
-| Compute | ~1 day A5000 pretraining; 2 h vs 22 h fine-tuning reported in different places | Measured by our pilot on B300; reported actual runtimes | Paper's figures are inconsistent with ≈1.1M steps/model |
-| Pretraining schedule | 44 epochs, batch 32 | **TBD after pilot** (identical for both objectives) — record chosen bs / epochs / lr / max minutes here | Cost; any reduction applies to both models equally |
+| Compute | ~1 day A5000 pretraining; 2 h vs 22 h fine-tuning reported in different places | Measured by our pilot on B300; reported actual runtimes | Pretraining figure is consistent with ≈102k steps/model (4 ep × 814k / 32); the fine-tuning figures remain inconsistent |
+| Pretraining schedule | 4 epochs, batch 32 (App. E.1) | **TBD after pilot** (identical for both objectives) — record chosen bs / epochs / lr / max minutes here | Cost; any reduction applies to both models equally |
 | Seeds | Unspecified | Fine-tuning seeds 1, 2; one pretraining run per objective | Budget |
 
 Fill in the "TBD after pilot" row (and the actual runtime) before quoting any Track A result.

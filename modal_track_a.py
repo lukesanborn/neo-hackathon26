@@ -4,7 +4,8 @@ Chains the separately deployed apps via `modal.Function.from_name`:
 
     census (jepa-census) -> pretrain pilot (jepa-pretrain; prints hours/cost, STOPS)
     -> pretrain x2 (jepa-pretrain; needs --confirm-pretrain + explicit schedule)
-    -> fine-tune each kidney checkpoint with {scgpt, celljepa} x seeds {1,2} (jepa-perturb)
+    -> fine-tune each kidney checkpoint with {scgpt_paper, celljepa} x seeds {1,2} (jepa-perturb)
+       (scgpt_paper = the paper's scGPT FT baseline, MSE + 0.8*ECS on <cls>: celljepa minus the JEPA term)
     -> Track A report (this app, CPU) under experiment `adamson_trackA_v1`.
 
 Track A and Track B never share a matched comparison; Track B appears only in the report's
@@ -16,7 +17,7 @@ explicit invocation, and pretraining refuses to start without --confirm-pretrain
     modal run modal_track_a.py --stage census --census-stage full
     modal run modal_track_a.py --stage pilot                     # B300; prints projections; stops
     modal run modal_track_a.py --stage pretrain --confirm-pretrain \
-        --pt-batch-size 32 --pt-epochs 44 --pt-lr 1e-4 --pt-max-minutes 1380
+        --pt-batch-size 32 --pt-epochs 4 --pt-lr 1e-4 --pt-max-minutes 1380
     modal run modal_track_a.py --stage collect --call-ids fc-...,fc-...
     modal run modal_track_a.py --stage finetune
     modal run modal_track_a.py --stage finetune-public
@@ -51,7 +52,7 @@ SPLIT_SEED = 1                              # same GEARS simulation split as Tra
 GPU = "B300"
 MAX_FT_CONCURRENCY = 4
 PT_OBJECTIVES = ("scgpt", "jepa")
-FT_METHODS = ("scgpt", "celljepa")
+FT_METHODS = ("scgpt_paper", "celljepa")   # paper-matched pair: differ only in the JEPA term
 FT_INPUT_TRANSFORM = "bins50"               # kidney models were pretrained on 50-bin values
 PUBLIC_INPUT_TRANSFORM = "log1p"
 PUBLIC_CKPT = "scGPT_human"
@@ -63,11 +64,12 @@ CKPT_FILES = ("args.json", "best_model.pt", "vocab.json")
 CENSUS_MANIFEST = "trackA/kidney_census_2023-05-15/manifest.json"   # volume-relative
 PILOT_DIR = "trackA/pretrain_pilot"                                  # volume-relative
 
-# Paper schedule (Cell-JEPA §E): ~814k kidney cells, 44 epochs, batch size 32.
+# Paper schedule (Cell-JEPA App. E.1): ~814k kidney cells, 4 epochs, batch size 32
+# (≈102k steps/model, consistent with the paper's "about one day on a single A5000").
 PAPER_N_CELLS = 814_000
-PAPER_EPOCHS = 44
+PAPER_EPOCHS = 4
 PAPER_BATCH = 32
-ALT_SCHEDULES = ((10, 64), (5, 128), (3, 256))   # (epochs, batch) projections printed after the pilot
+ALT_SCHEDULES = ((4, 64), (2, 32), (2, 64))   # (epochs, batch) projections printed after the pilot
 # ASSUMED list price for projections only — verify the B300 rate on modal.com/pricing.
 ASSUMED_USD_PER_GPU_HOUR = 6.25
 

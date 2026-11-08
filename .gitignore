@@ -8,3 +8,9 @@ reports/
 *.npz
 *.h5ad
 .claude/
+
+.DS_Store
+**/.DS_Store
+*.pdf
+diag/results/live/
+diag/results/*.log

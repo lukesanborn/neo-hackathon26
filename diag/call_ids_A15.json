@@ -1,0 +1,14 @@
+{
+ "T1 scgpt_kidney_lr3e5 s0": "fc-01M6W2J88HEN4GP08WAPFWA54G",
+ "T1 scgpt_kidney_lr3e5 s1": "fc-01M6W2J8C86G1JSJCWB5ZTCQQY",
+ "T1 scgpt_kidney_lr3e5 s2": "fc-01M6W2J8FWQMHBW95FY5D7PMW7",
+ "T1 jepa_kidney_lr3e5 s0": "fc-01M6W2J8KABEAKF8DZW4S76SW9",
+ "T1 jepa_kidney_lr3e5 s1": "fc-01M6W2J8PS7JEAY5ZJSA9PBQEM",
+ "T1 jepa_kidney_lr3e5 s2": "fc-01M6W2J8T7BHYAHKW2MZ8F1JDC",
+ "T1 jepa_kidney_lr3e5_token s0": "fc-01M6W2J8XYNV4ZY1T740ZA83J3",
+ "T1 jepa_kidney_lr3e5_token s1": "fc-01M6W2J91EMKJX466VK1HYNWW4",
+ "T1 jepa_kidney_lr3e5_token s2": "fc-01M6W2J94TPE72S2RQQV4WC7V9",
+ "T1 jepa_kidney_lr3e5_center s0": "fc-01M6W2J98FGCP66TZAJKZJRNDR",
+ "T1 jepa_kidney_lr3e5_center s1": "fc-01M6W2J9C8WV1X015GGAE3W7EN",
+ "T1 jepa_kidney_lr3e5_center s2": "fc-01M6W2J9FHDAKA28X94YC11YPW"
+}

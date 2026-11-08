@@ -136,7 +136,7 @@ def fake_env(monkeypatch):
     ds = fake_dataset(n_genes=40, n_perts=12, cells=30, n_ctrl=200)
     vocab = _Vocab({"<pad>": 0, "<cls>": 1, "<eoc>": 2, **{g: i + 3 for i, g in enumerate(ds.gene_names)}})
 
-    def fake_build(ckpt_dir, seed, dropout=0.0):
+    def fake_build(ckpt_dir, seed, dropout=0.0, load=True):
         torch.manual_seed(seed)
         return FakeScGPT(len(vocab)), vocab, {"embsize": 16}, {"n_loaded": 0}
 
@@ -166,7 +166,7 @@ def test_celljepa_trainer_step_predict_and_matched_init(fake_env):
     c = ds.split["val"][0]
     p = tr.predict([c], n_controls=10)[c]
     assert p.shape == (ds.n_genes,) and np.isfinite(p).all()
-    for m in ("scgpt", "jepa"):
+    for m in ("scgpt", "jepa", "scgpt_paper"):
         assert np.isfinite(trs[m].train_step(np.arange(16))["loss"])
 
 
@@ -207,3 +207,99 @@ def test_ema_teacher_moves_and_bins50_runs(fake_env):
     assert state_hash(tr.teacher) != t0
     c = fake_env.split["val"][0]
     assert np.isfinite(tr.predict([c], n_controls=8)[c]).all()
+
+
+# ----------------------------------------------------------------------------- scgpt_paper (paper's baseline)
+
+
+def test_scgpt_paper_config_label_and_deviations():
+    sp = T.TrainConfig(method="scgpt_paper", seed=1)
+    assert sp.ecs_weight == 0.8
+    assert all(d in sp.deviations for d in T.SCGPT_PAPER_DEVIATIONS)
+    assert T.ECS_DEVIATION in sp.deviations and T.ECS_DEVIATION in T.CELLJEPA_DEVIATIONS
+    assert not any("teacher" in d or "projector" in d for d in sp.deviations)
+    assert T.METHOD_LABELS["scgpt_paper"] == T.SCGPT_PAPER_LABEL and "unofficial" in T.SCGPT_PAPER_LABEL
+
+
+def test_scgpt_paper_matches_celljepa_streams_and_has_no_jepa(fake_env):
+    ds = fake_env
+    tp, tc = _trainer(ds, "scgpt_paper"), _trainer(ds, "celljepa")
+    assert tp.init_hash == tc.init_hash
+    np.testing.assert_array_equal(tp.pair, tc.pair)                  # same control pairing
+    assert tp.use_cls and tp.teacher is None and tp.projector is None and tp.predictor is None
+    n_model = len(list(tp.model.parameters()))
+    assert len(tp.trainable_params()) == n_model                     # no heads
+    assert len(tc.trainable_params()) > n_model
+    perm_p, perm_c = tp.np_rng.permutation(len(tp.train_cells)), tc.np_rng.permutation(len(tc.train_cells))
+    np.testing.assert_array_equal(perm_p, perm_c)                    # same epoch order (np_rng)
+    for s in range(3):
+        b = perm_p[s * 16:(s + 1) * 16]
+        state_p, state_c = tp.gen.get_state(), tc.gen.get_state()
+        assert torch.equal(state_p, state_c)                         # same gene sub-sampling stream
+        src_p, *_ = tp._batch(b)
+        src_c, *_ = tc._batch(b)
+        assert torch.equal(src_p, src_c)                             # same selected genes
+        tp.gen.set_state(state_p)
+        tc.gen.set_state(state_c)
+        op, oc = tp.train_step(b), tc.train_step(b)
+        assert set(op) == {"loss", "loss_mse", "loss_ecs"}
+        assert "loss_jepa" in oc
+        assert all(np.isfinite(v) for v in op.values())
+        assert op["loss"] == pytest.approx(op["loss_mse"] + 0.8 * op["loss_ecs"], rel=1e-5)
+    assert torch.equal(tp.gen.get_state(), tc.gen.get_state())
+    c = ds.split["val"][0]
+    p = tp.predict([c], n_controls=10)[c]
+    assert p.shape == (ds.n_genes,) and np.isfinite(p).all()
+
+
+def test_scgpt_paper_first_step_mse_ecs_match_celljepa(fake_env):
+    """Before any update both arms run the same batch through the same student: MSE and ECS agree."""
+    tp, tc = _trainer(fake_env, "scgpt_paper"), _trainer(fake_env, "celljepa")
+    b = np.arange(16)
+    op, oc = tp.train_step(b), tc.train_step(b)
+    assert op["loss_mse"] == pytest.approx(oc["loss_mse"], rel=1e-6)
+    assert op["loss_ecs"] == pytest.approx(oc["loss_ecs"], rel=1e-6)
+
+
+def test_scgpt_paper_pilot_gates(fake_env, monkeypatch, tmp_path):
+    for f in ("reset_peak_memory_stats", "synchronize", "empty_cache"):
+        monkeypatch.setattr(T.torch.cuda, f, lambda *a, **k: None)
+    monkeypatch.setattr(T.torch.cuda, "max_memory_allocated", lambda *a, **k: 0)
+    monkeypatch.setattr(T, "env_info", lambda: {})
+    orig = T.Trainer.__init__
+
+    def cpu_init(self, ds, ckpt_dir, cfg, device="cpu", log=print):
+        cfg.precision, cfg.max_seq_len, cfg.batch_size, cfg.eval_batch_size = "fp32", 24, 16, 8
+        orig(self, ds, ckpt_dir, cfg, device="cpu", log=lambda *_: None)
+
+    monkeypatch.setattr(T.Trainer, "__init__", cpu_init)
+    rep = T.run_pilot(fake_env, "/nonexistent", methods=("scgpt_paper", "celljepa"), steps=3, warmup=1,
+                      out_dir=str(tmp_path))
+    g = rep["gates"]
+    assert g["scgpt_paper_loss_components_finite"] and g["matched_init"] and g["finite_losses"]
+    assert not any(k.startswith("scgpt_paper_") and "teacher" in k for k in g)
+    assert "teacher_has_grads" not in rep["methods"]["scgpt_paper"]
+    assert rep["methods"]["scgpt_paper"]["init_state_hash"] == rep["methods"]["celljepa"]["init_state_hash"]
+
+
+@pytest.mark.parametrize("method", ["scgpt", "scgpt_paper", "celljepa"])
+def test_retrieval_loss_and_selection_option(fake_env, method):
+    ds = fake_env
+    tr = _trainer(ds, method, retr_weight=1.0, selection="retrieval")
+    assert tr.retr_R.shape == (len(tr.pert_conds), ds.n_genes)
+    perm = np.random.default_rng(0).permutation(len(tr.train_cells))   # mix perturbed + control cells
+    out = tr.train_step(perm[:16])
+    assert np.isfinite(out["loss"]) and "loss_retr" in out and out["loss_retr"] > 0
+    cfg = tr.cfg
+    assert "retrieval" in cfg.checkpoint_selection
+    assert any("contrastive retrieval loss" in d for d in cfg.deviations)
+    # defaults unchanged: no retrieval loss term, delta-RMSE selection
+    base = _trainer(ds, method)
+    out0 = base.train_step(perm[:16])
+    assert "loss_retr" not in out0 and base.cfg.selection == "delta_rmse"
+
+
+def test_random_init_option_records_deviation(fake_env):
+    tr = _trainer(fake_env, "scgpt_paper", random_init=True)
+    assert tr.cfg.random_init and any("no pretrained weights" in d for d in tr.cfg.deviations)
+    assert np.isfinite(tr.train_step(np.arange(16))["loss"])

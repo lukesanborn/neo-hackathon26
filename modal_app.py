@@ -56,8 +56,12 @@ def ckpt_dir(ckpt: str) -> str:
     return path
 
 
-def cache_dir(split_seed: int) -> str:
-    return f"{VOL_PATH}/data/adamson_gears002_simulation_seed{split_seed}"
+def cache_dir(split_seed: int, dataset: str = "adamson") -> str:
+    """adamson -> /vol/data/adamson_gears002_simulation_seed<k> (unchanged; existing experiments use it);
+    others -> /vol/data/<dataset>_gears_simulation_seed<k>."""
+    from src.data import cache_dir_name
+
+    return f"{VOL_PATH}/data/{cache_dir_name(dataset, split_seed)}"
 
 
 def exp_dir(exp_id: str) -> str:
@@ -73,38 +77,51 @@ def _exp_config(exp_id: str) -> dict:
 # =============================================================================== prepare
 
 
+# 32 GB is enough for Adamson; main() raises it to 64 GB for other datasets (Replogle K562 essential:
+# 162,751 cells x 5,000 genes = 3.3 GB dense float32 before exclusions, plus AnnData copies).
 @app.function(image=hopper_image, volumes={VOL_PATH: vol}, cpu=4, memory=32768, timeout=3600)
 def prepare(exp_id: str = DEFAULT_EXP, split_seed: int = 1, n_eval_controls: int = 256,
-            eval_control_seed: int = 0, force: bool = False) -> dict:
+            eval_control_seed: int = 0, force: bool = False, dataset: str = "adamson") -> dict:
     """Download once, validate, build the fixed split + caches, run the simple baselines."""
     import numpy as np
 
     from src import baselines as B
-    from src.data import build_cache, download_adamson, download_scgpt, load_cache, percell_pairs
+    from src.data import build_cache, download_dataset, download_scgpt, load_cache, percell_pairs
     from src.evaluate import (PERCELL_N_CELLS, evaluate_predictions, percell_metrics, summarize,
                               summarize_percell)
+    from src.models import DATASET_HGNC_ALIASES, HGNC_ALIASES
     from src.train import _write, _write_rows
 
-    dl = download_adamson(RAW)
+    # bind-check first: never build a cache / baselines for an experiment bound to another dataset
+    edir = exp_dir(exp_id)
+    exp_path = os.path.join(edir, "experiment.json")
+    prev = json.load(open(exp_path)) if os.path.exists(exp_path) else None
+    cdir = cache_dir(split_seed, dataset)
+    if prev is not None and prev.get("dataset", "adamson") != dataset:
+        raise RuntimeError(f"experiment {exp_id} is bound to dataset {prev.get('dataset', 'adamson')!r}, "
+                           f"not {dataset!r}; use a new exp_id")
+    if prev is not None and prev["cache_dir"] != cdir:
+        raise RuntimeError(f"experiment {exp_id} already bound to cache {prev['cache_dir']}, not {cdir}")
+
+    dl = download_dataset(dataset, RAW)
     ck = download_scgpt(CKPT)
     with open(os.path.join(CKPT, "vocab.json")) as f:
         vocab_genes = set(json.load(f))
-    cdir = cache_dir(split_seed)
     if force or not os.path.exists(os.path.join(cdir, "manifest.json")):
-        build_cache(dl["h5ad_path"], cdir, split_seed, n_eval_controls, eval_control_seed, dl, ck, vocab_genes)
+        build_cache(dl["h5ad_path"], cdir, split_seed, n_eval_controls, eval_control_seed, dl, ck, vocab_genes,
+                    dataset=dataset, base_aliases=HGNC_ALIASES, extra_aliases=DATASET_HGNC_ALIASES.get(dataset))
         vol.commit()
     ds = load_cache(cdir)
+    if ds.manifest.get("dataset_name", "adamson") != dataset:
+        raise RuntimeError(f"cache {cdir} holds {ds.manifest.get('dataset_name')!r}, expected {dataset!r}")
 
-    edir = exp_dir(exp_id)
     os.makedirs(edir, exist_ok=True)
     track = "A" if "trackA" in exp_id else "B"
-    exp_path = os.path.join(edir, "experiment.json")
-    if os.path.exists(exp_path):
-        prev = json.load(open(exp_path))
+    if prev is not None:
         if prev["split_hash"] != ds.manifest["split_hash"]:
             raise RuntimeError(f"experiment {exp_id} already bound to split {prev['split_hash']}")
     else:
-        _write(edir, "experiment.json", {"exp_id": exp_id, "track": track, "cache_dir": cdir,
+        _write(edir, "experiment.json", {"exp_id": exp_id, "track": track, "dataset": dataset, "cache_dir": cdir,
                                           "split_seed": split_seed, "split_hash": ds.manifest["split_hash"],
                                           "created_unix": time.time()})
 
@@ -151,7 +168,17 @@ def prepare(exp_id: str = DEFAULT_EXP, split_seed: int = 1, n_eval_controls: int
     vol.commit()
     m = ds.manifest
     gate = {
+        "dataset": m.get("dataset_name", "adamson"), "cache_dir": cdir,
         "n_cells": m["n_cells"], "n_genes": m["n_genes"], "n_interventions": m["n_interventions"],
+        "n_cells_raw": m.get("n_cells_raw"), "n_cells_excluded": m.get("n_cells_excluded"),
+        "n_excluded_interventions": m.get("n_excluded_interventions"),
+        "excluded_by_reason_counts": m.get("excluded_by_reason_counts"),
+        # full lists are in the manifest; the (large) not-measured group is shown as a count only
+        "excluded_by_reason": {r: sorted(c for c, why in m.get("excluded_interventions", {}).items() if why == r)
+                               for r in sorted(set(m.get("excluded_interventions", {}).values()))
+                               if r != "target_not_in_measured_genes"},
+        "target_aliases_applied": m.get("target_aliases_applied"),
+        "duplicate_gene_names": m.get("duplicate_gene_names"),
         "split_sizes": m["split_sizes"], "split_hash": m["split_hash"],
         "targets_not_in_gene_list": m["targets_not_in_gene_list"],
         "vocab_coverage": {k: v for k, v in (m["vocab_coverage"] or {}).items() if k != "genes_not_in_vocab_first50"},
@@ -205,7 +232,8 @@ def pilot_blackwell(exp_id: str = DEFAULT_EXP, config_name: str = "blackwell_B30
 
 
 def _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt="scGPT_human",
-           input_transform="log1p", teacher_update="frozen", max_steps_per_epoch=0) -> dict:
+           input_transform="log1p", teacher_update="frozen", max_steps_per_epoch=0,
+           cfg_overrides: dict | None = None) -> dict:
     from src.data import load_cache
     from src.train import TrainConfig, run_training
 
@@ -213,7 +241,7 @@ def _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt="scG
     ds = load_cache(_exp_config(exp_id)["cache_dir"])
     cfg = TrainConfig(method=method, seed=seed, epochs=epochs, aux_weight=aux_weight, max_minutes=max_minutes,
                       ckpt=ckpt, input_transform=input_transform, teacher_update=teacher_update,
-                      max_steps_per_epoch=max_steps_per_epoch or None)
+                      max_steps_per_epoch=max_steps_per_epoch or None, **(cfg_overrides or {}))
     run_dir = os.path.join(exp_dir(exp_id), "runs", f"{method}_s{seed}_{tag}")
     if os.path.exists(os.path.join(run_dir, "metrics.json")):
         raise FileExistsError(f"{run_dir} already completed; runs are immutable — use a new tag")
@@ -224,11 +252,13 @@ def _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt="scG
               timeout=4 * 3600, max_containers=MAX_TRAIN_CONTAINERS)
 def train(exp_id: str, method: str, seed: int, epochs: int = 15, aux_weight: float = 0.5,
           max_minutes: float = 150.0, tag: str = "v1", ckpt: str = "scGPT_human",
-          input_transform: str = "log1p", teacher_update: str = "frozen", max_steps_per_epoch: int = 0) -> dict:
+          input_transform: str = "log1p", teacher_update: str = "frozen", max_steps_per_epoch: int = 0,
+          cfg_overrides: dict | None = None) -> dict:
     """ckpt: dir name under /vol/checkpoints/ or an absolute path; input_transform: log1p | bins50;
-    max_steps_per_epoch: 0 = full epochs (smoke tests only)."""
+    max_steps_per_epoch: 0 = full epochs (smoke tests only); cfg_overrides: extra TrainConfig fields
+    (e.g. {"selection": "retrieval", "retr_weight": 1.0})."""
     return _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt, input_transform,
-                  teacher_update, max_steps_per_epoch)
+                  teacher_update, max_steps_per_epoch, cfg_overrides)
 
 
 @gpu_function(image=blackwell_image, gpu=BLACKWELL_GPU, volumes={VOL_PATH: vol}, memory=65536,
@@ -236,9 +266,9 @@ def train(exp_id: str, method: str, seed: int, epochs: int = 15, aux_weight: flo
 def train_blackwell(exp_id: str, method: str, seed: int, epochs: int = 15, aux_weight: float = 0.5,
                     max_minutes: float = 150.0, tag: str = "v1", ckpt: str = "scGPT_human",
                     input_transform: str = "log1p", teacher_update: str = "frozen",
-                    max_steps_per_epoch: int = 0) -> dict:
+                    max_steps_per_epoch: int = 0, cfg_overrides: dict | None = None) -> dict:
     return _train(exp_id, method, seed, epochs, aux_weight, max_minutes, tag, ckpt, input_transform,
-                  teacher_update, max_steps_per_epoch)
+                  teacher_update, max_steps_per_epoch, cfg_overrides)
 
 
 # =============================================================================== aggregate
@@ -267,12 +297,13 @@ def main(stage: str = "all", exp_id: str = DEFAULT_EXP, epochs: int = 15, aux_we
          max_minutes: float = 150.0, seeds: str = "1,2", tag: str = "v1", stack: str = "hopper",
          gpu: str = "", steps: int = 150, blackwell_gpus: str = "B300", methods: str = "scgpt,jepa",
          ckpt: str = "scGPT_human", input_transform: str = "log1p", teacher_update: str = "frozen",
-         max_steps_per_epoch: int = 0, config_name: str = ""):
+         max_steps_per_epoch: int = 0, config_name: str = "", dataset: str = "adamson"):
     def show(x):
         print(json.dumps(x, indent=2, default=str))
 
     if stage in ("prepare", "all"):
-        show(prepare.remote(exp_id))
+        prep = prepare if dataset == "adamson" else prepare.with_options(memory=65536)
+        show(prep.remote(exp_id, dataset=dataset))
 
     if stage == "benchmark":
         calls = {"hopper_H100": pilot.spawn(exp_id, "hopper_H100", steps, aux_weight),

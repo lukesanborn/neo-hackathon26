@@ -1,7 +1,14 @@
-"""Track A — Cell-JEPA reimplemented from the paper (unofficial): Census kidney corpus.
+"""Track A — Cell-JEPA reimplemented from the paper (unofficial): Census pretraining corpora.
 
-Builds the kidney pretraining cache from CELLxGENE Census LTS release 2023-05-15 with
-scGPT's kidney filter (scGPT's 814k-cell kidney corpus ~ Cell-JEPA's "800K kidney cells").
+Builds pretraining caches from CELLxGENE Census LTS release 2023-05-15. Corpora (CORPORA):
+
+* ``kidney`` (default): scGPT's kidney filter (scGPT's 814k-cell kidney corpus ~ Cell-JEPA's
+  "800K kidney cells"), all matching cells (or the first ``max_cells`` by soma_joinid).
+* ``blood_marrow``: healthy blood + bone marrow, a seeded random sample of 2M matching cells
+  (sorted by soma_joinid after sampling), with the PBMC-10K evaluation datasets screened out
+  (see ``leakage_check``). Used for continued pretraining of public scGPT_human.
+
+The contract below is identical for every corpus; only OUT differs (CORPORA[name]["out"]).
 
 Cache contract (read by the pretraining unit), under OUT = /vol/trackA/kidney_census_2023-05-15/:
 
@@ -39,6 +46,42 @@ OBS_VALUE_FILTER = "tissue_general == 'kidney' and disease == 'normal' and suspe
 X_LAYER = "raw"
 N_BINS = 50
 VAL_FRACTION = 0.01
+
+# Named corpus specs. "kidney" must stay byte-identical to the original constants above (its
+# cache already exists and its plan provenance is checked on reuse).
+CORPORA: dict[str, dict] = {
+    "kidney": {
+        "filter": OBS_VALUE_FILTER,
+        "out": "/vol/trackA/kidney_census_2023-05-15",
+        "smoke_out": "/vol/smoke/census/kidney_census_2023-05-15",
+        "max_cells": None,
+        "sample": "first",
+        "leakage_check": False,
+        "rationale": "scGPT's kidney corpus filter (scGPT data/cellxgene build_soma_idx); "
+                     "Cell-JEPA reports ~800K kidney cells, matching scGPT's 814k kidney set.",
+    },
+    "blood_marrow": {
+        "filter": "tissue_general in ['blood', 'bone marrow'] and disease == 'normal' "
+                  "and suspension_type != 'na'",
+        "out": "/vol/trackA/blood_marrow_census_2023-05-15_2M",
+        "smoke_out": "/vol/smoke/census/blood_marrow_census_2023-05-15",
+        "max_cells": 2_000_000,
+        "sample": "random",
+        "sample_seed": 0,
+        "leakage_check": True,
+        "rationale": "In-domain continued pretraining of public scGPT_human for the PBMC (blood) "
+                     "and K562 (leukemia, bone-marrow lineage) evaluations: healthy blood + bone "
+                     "marrow, 2M-cell seeded random sample, PBMC-10K eval datasets screened out.",
+    },
+}
+
+# PBMC-10K evaluation data = 10x Genomics public datasets pbmc4k + pbmc8k (2017). A Census
+# dataset is excluded if its title or collection name matches any EXCLUDE pattern; anything
+# matching a SEARCH pattern is recorded as a reviewed candidate (most blood data are PBMCs, so
+# PBMC alone is NOT grounds for exclusion).
+LEAKAGE_EXCLUDE_PATTERNS = [r"10x\s*genomics", r"pbmc[\s_-]*[48]\s*k\b", r"\b[48]\s*k[\s_-]*pbmc"]
+LEAKAGE_SEARCH_PATTERNS = [r"pbmc", r"peripheral blood mononuclear", r"10x", r"\b[48]\s*k\b"]
+LEAKAGE_FIELDS = ("dataset_title", "collection_name", "collection_doi", "dataset_id", "collection_id")
 SPLIT_SEED = 0
 DEFAULT_SHARD_SIZE = 80_000
 
@@ -164,6 +207,79 @@ def make_val_split(shard_sizes: list[int], frac: float = VAL_FRACTION, seed: int
     return [[int(s), int(r)] for s, r in zip(shard, row)]
 
 
+def get_corpus(name: str) -> dict:
+    if name not in CORPORA:
+        raise ValueError(f"unknown corpus {name!r}; choose from {sorted(CORPORA)}")
+    return CORPORA[name]
+
+
+def select_cells(n: int, max_cells: int | None, sample: str, seed: int = 0) -> np.ndarray:
+    """Row positions (ascending) to keep out of n joinid-sorted matching cells.
+
+    "first": the first max_cells; "random": a seeded uniform sample without replacement, sorted
+    so shard reads stay contiguous. max_cells None or >= n keeps every cell.
+    """
+    if sample not in ("first", "random"):
+        raise ValueError(f"unknown sample mode {sample!r}")
+    if max_cells is not None and max_cells < 0:
+        raise ValueError("max_cells must be >= 0")
+    if max_cells is None or max_cells >= n:
+        return np.arange(n, dtype=np.int64)
+    if sample == "first":
+        return np.arange(max_cells, dtype=np.int64)
+    return np.sort(np.random.default_rng(seed).choice(n, size=max_cells, replace=False)).astype(np.int64)
+
+
+def leakage_check(datasets: list[dict], slice_dataset_ids) -> dict:
+    """Screen Census datasets in the slice for the PBMC-10K eval data (10x pbmc4k/pbmc8k).
+
+    ``datasets`` are census_info "datasets" rows (dicts with LEAKAGE_FIELDS where available).
+    Excluded = title/collection matches an EXCLUDE pattern; candidates = slice datasets that
+    match only a broader SEARCH pattern (recorded for review, not excluded).
+    """
+    import re
+
+    slice_ids = set(slice_dataset_ids)
+    exc_re = [re.compile(p, re.I) for p in LEAKAGE_EXCLUDE_PATTERNS]
+    srch_re = [re.compile(p, re.I) for p in LEAKAGE_SEARCH_PATTERNS]
+    excluded, candidates = [], []
+    for row in datasets:
+        if row.get("dataset_id") not in slice_ids:
+            continue
+        text = " | ".join(str(row.get(k) or "") for k in ("dataset_title", "collection_name"))
+        rec = {k: (None if row.get(k) is None else str(row.get(k))) for k in LEAKAGE_FIELDS}
+        hit = [p.pattern for p in exc_re if p.search(text)]
+        if hit:
+            excluded.append({**rec, "matched": hit})
+        elif any(p.search(text) for p in srch_re):
+            candidates.append(rec)
+    return {
+        "target": "PBMC-10K eval = 10x Genomics public datasets pbmc4k + pbmc8k (2017)",
+        "searched_fields": ["dataset_title", "collection_name"],
+        "exclude_patterns": LEAKAGE_EXCLUDE_PATTERNS,
+        "search_patterns": LEAKAGE_SEARCH_PATTERNS,
+        "n_slice_datasets_screened": len(slice_ids),
+        "excluded_dataset_ids": sorted(e["dataset_id"] for e in excluded),
+        "excluded": excluded,
+        "candidates_reviewed_not_excluded": candidates,
+    }
+
+
+def screen_leakage(census, slice_dataset_ids) -> dict:
+    """leakage_check against the open Census's census_info datasets table.
+
+    ``slice_dataset_ids``: the dataset_id of every cell in the filtered slice (a pandas Series);
+    adds per-record and total slice cell counts.
+    """
+    ds = census["census_info"]["datasets"].read().concat().to_pandas()
+    counts = slice_dataset_ids.astype(str).value_counts()
+    out = leakage_check(ds.to_dict("records"), counts.index.tolist())
+    for rec in out["excluded"] + out["candidates_reviewed_not_excluded"]:
+        rec["n_cells_in_slice"] = int(counts.get(rec["dataset_id"], 0))
+    out["n_cells_excluded"] = int(sum(counts.get(d, 0) for d in out["excluded_dataset_ids"]))
+    return out
+
+
 def shard_bounds(n_cells: int, shard_size: int) -> list[tuple[int, int]]:
     return [(a, min(a + shard_size, n_cells)) for a in range(0, n_cells, shard_size)]
 
@@ -220,27 +336,37 @@ def census_description() -> dict:
         return {"error": repr(e)}
 
 
-def plan(out_dir: str, vocab: dict[str, int], shard_size: int, max_cells: int | None) -> dict:
+def plan(out_dir: str, vocab: dict[str, int], shard_size: int, max_cells: int | None,
+         corpus: str = "kidney") -> dict:
     """Read obs/var, map genes to the vocab, fix cell order and shard boundaries.
 
     Writes cells.npz, genes.json, var_vocab.npy and plan.json (last) into out_dir. Raises if
     the filter matches no cells or no Census gene maps to the vocab.
     """
+    spec = get_corpus(corpus)
+    obs_filter = spec["filter"]
     os.makedirs(os.path.join(out_dir, "shards"), exist_ok=True)
     with open_census() as census:
         exp = census["census_data"][CENSUS_ORGANISM_KEY]
-        obs = (exp.obs.read(value_filter=OBS_VALUE_FILTER,
-                            column_names=["soma_joinid", "dataset_id", "is_primary_data"])
+        obs = (exp.obs.read(value_filter=obs_filter,
+                            column_names=["soma_joinid", "dataset_id", "is_primary_data", "tissue_general"])
                .concat().to_pandas())
         var = (exp.ms["RNA"].var.read(column_names=["soma_joinid", "feature_id", "feature_name"])
                .concat().to_pandas())
         n_obs_total = int(exp.obs.count)
+        leak = screen_leakage(census, obs["dataset_id"]) if spec.get("leakage_check") else None
     obs = obs.sort_values("soma_joinid").reset_index(drop=True)
     n_filter = len(obs)
-    if max_cells is not None:
-        obs = obs.iloc[:max_cells]
+    if leak is not None and leak["excluded_dataset_ids"]:
+        excl = obs["dataset_id"].astype(str).isin(set(leak["excluded_dataset_ids"]))
+        obs = obs[~excl.to_numpy()].reset_index(drop=True)
+    n_eligible = len(obs)
+    seed = int(spec.get("sample_seed", 0))
+    obs = obs.iloc[select_cells(n_eligible, max_cells, spec["sample"], seed)].reset_index(drop=True)
     if len(obs) == 0:
-        raise RuntimeError(f"obs filter matched no cells: {OBS_VALUE_FILTER!r}")
+        raise RuntimeError(f"obs filter matched no cells: {obs_filter!r}")
+    if not (np.diff(obs["soma_joinid"].to_numpy()) > 0).all():
+        raise RuntimeError("selected soma_joinids are not strictly ascending")
     datasets = sorted(obs["dataset_id"].unique().tolist())
     ds_index = {d: i for i, d in enumerate(datasets)}
     np.savez(os.path.join(out_dir, "cells.npz"),
@@ -265,11 +391,23 @@ def plan(out_dir: str, vocab: dict[str, int], shard_size: int, max_cells: int | 
     missing = sorted(set(var["feature_name"]) - set(vocab))
 
     per_ds = obs["dataset_id"].value_counts()
+    per_tissue = obs["tissue_general"].astype(str).value_counts()
     info = {
+        "corpus": corpus,
         "n_obs_census_homo_sapiens": n_obs_total,
         "n_cells_matching_filter": n_filter,
+        "n_cells_eligible": n_eligible,
         "n_cells": len(obs),
         "max_cells": max_cells,
+        "sampling": {
+            "mode": spec["sample"], "seed": seed if spec["sample"] == "random" else None,
+            "n_matching_filter": n_filter, "n_eligible_after_exclusions": n_eligible, "n_sampled": len(obs),
+            "rule": ("np.sort(np.random.default_rng(seed).choice(n_eligible, max_cells, replace=False)) "
+                     "over joinid-sorted eligible cells (all cells if max_cells >= n_eligible)"
+                     if spec["sample"] == "random" else "first max_cells eligible cells by soma_joinid"),
+        },
+        "cells_per_tissue_general": {str(t): int(c) for t, c in per_tissue.items()},
+        "leakage_check": leak,
         "n_datasets": len(datasets),
         "dataset_ids": datasets,
         "cells_per_dataset": {d: int(per_ds[d]) for d in datasets},
@@ -284,17 +422,41 @@ def plan(out_dir: str, vocab: dict[str, int], shard_size: int, max_cells: int | 
         "missing_symbol_examples": missing[:50],
         "gene_list_sha256": sha256_json([[g["feature_id"], g["feature_name"], g["vocab_id"]] for g in kept]),
         "shard_size": shard_size,
-        "provenance": plan_provenance(vocab),
+        "provenance": plan_provenance(vocab, corpus),
         "shards": shard_bounds(len(obs), shard_size),
     }
+    remove_stale_shards(out_dir, len(info["shards"]))
     write_json_atomic(os.path.join(out_dir, "plan.json"), info)
     return info
 
 
-def plan_provenance(vocab: dict[str, int]) -> dict:
-    """Inputs that determine the cache contents; a reused plan must match these exactly."""
-    return {"census_version": CENSUS_VERSION, "organism": ORGANISM, "obs_value_filter": OBS_VALUE_FILTER,
+def remove_stale_shards(out_dir: str, n_shards: int) -> list[str]:
+    """Delete shard files numbered >= n_shards (left by an earlier plan); consumers glob shard_*.npz."""
+    import glob
+    import re
+
+    removed = []
+    for p in glob.glob(os.path.join(out_dir, "shards", "shard_*")):
+        m = re.search(r"shard_(\d+)\.(npz|json)(\.tmp)?$", p)
+        if m and int(m.group(1)) >= n_shards:
+            os.remove(p)
+            removed.append(p)
+    return removed
+
+
+def plan_provenance(vocab: dict[str, int], corpus: str = "kidney") -> dict:
+    """Inputs that determine the cache contents; a reused plan must match these exactly.
+
+    The kidney dict is unchanged from before the corpus registry, so its existing plan.json
+    still validates on reuse.
+    """
+    spec = get_corpus(corpus)
+    prov = {"census_version": CENSUS_VERSION, "organism": ORGANISM, "obs_value_filter": spec["filter"],
             "X_layer": X_LAYER, "n_bins": N_BINS, "vocab_sha256": sha256_json(vocab)}
+    if corpus != "kidney":
+        prov.update({"corpus": corpus, "sample": spec["sample"], "sample_seed": spec.get("sample_seed"),
+                     "leakage_exclude_patterns": LEAKAGE_EXCLUDE_PATTERNS if spec.get("leakage_check") else None})
+    return prov
 
 
 def read_shard_triplets(soma_joinids: np.ndarray, var_vocab: np.ndarray):
@@ -337,15 +499,17 @@ def build_shard(out_dir: str, k: int, vocab_size: int, force: bool = False) -> d
     with open(os.path.join(out_dir, "plan.json")) as f:
         info = json.load(f)
     a, b = info["shards"][k]
+    joinids = np.load(os.path.join(out_dir, "cells.npz"))["soma_joinid"][a:b]
     if not force and os.path.exists(p) and os.path.exists(side):
         with open(side) as f:
             st = json.load(f)
-        if st.get("n_cells") == b - a and st.get("start") == a:
+        if (st.get("n_cells") == b - a and st.get("start") == a
+                and st.get("first_soma_joinid") == int(joinids[0])
+                and st.get("last_soma_joinid") == int(joinids[-1])):
             return {**st, "skipped": True}
     # drop the sidecar first: an npz without a sidecar is never treated as complete
     if os.path.exists(side):
         os.remove(side)
-    joinids = np.load(os.path.join(out_dir, "cells.npz"))["soma_joinid"][a:b]
     var_vocab = np.load(os.path.join(out_dir, "var_vocab.npy"))
     r, g, v, st = read_shard_triplets(joinids, var_vocab)
     sh = coo_to_shard(r, g, v, n_cells=b - a)
@@ -369,10 +533,14 @@ def build_shard(out_dir: str, k: int, vocab_size: int, force: bool = False) -> d
     return stats
 
 
-def finalize(out_dir: str, vocab_size: int, vocab_path: str, census_desc: dict, extra: dict | None = None) -> dict:
+def finalize(out_dir: str, vocab_size: int, vocab_path: str, census_desc: dict, extra: dict | None = None,
+             corpus: str = "kidney") -> dict:
     """Check every shard against the plan, write split.json, then manifest.json (last)."""
+    spec = get_corpus(corpus)
     with open(os.path.join(out_dir, "plan.json")) as f:
         info = json.load(f)
+    if info.get("corpus", "kidney") != corpus:  # pre-registry kidney plans carry no "corpus" key
+        raise RuntimeError(f"plan at {out_dir} is for corpus {info.get('corpus')!r}, not {corpus!r}")
     shard_stats = []
     for k, (a, b) in enumerate(info["shards"]):
         with np.load(shard_path(out_dir, k)) as z:
@@ -399,10 +567,10 @@ def finalize(out_dir: str, vocab_size: int, vocab_path: str, census_desc: dict, 
         "organism": ORGANISM,
         "measurement": "RNA",
         "X_layer": X_LAYER,
-        "obs_value_filter": OBS_VALUE_FILTER,
+        "corpus": corpus,
+        "obs_value_filter": spec["filter"],
         "is_primary_data_filter": None,
-        "filter_rationale": "scGPT's kidney corpus filter (scGPT data/cellxgene build_soma_idx); "
-                            "Cell-JEPA reports ~800K kidney cells, matching scGPT's 814k kidney set.",
+        "filter_rationale": spec["rationale"],
         "package_versions": package_versions(),
         "census_stack": os.environ.get("CENSUS_STACK"),
         "vocab_path": vocab_path,
@@ -410,6 +578,10 @@ def finalize(out_dir: str, vocab_size: int, vocab_path: str, census_desc: dict, 
         "n_cells": info["n_cells"],
         "n_cells_matching_filter": info["n_cells_matching_filter"],
         "max_cells": info["max_cells"],
+        "n_cells_eligible": info.get("n_cells_eligible", info["n_cells_matching_filter"]),
+        "sampling": info.get("sampling"),
+        "cells_per_tissue_general": info.get("cells_per_tissue_general"),
+        "leakage_check": info.get("leakage_check"),
         "n_datasets": info["n_datasets"],
         "dataset_ids": info["dataset_ids"],
         "cells_per_dataset": info["cells_per_dataset"],
