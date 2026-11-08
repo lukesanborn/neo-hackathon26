@@ -23,8 +23,15 @@ image = build_image("blackwell")
 CACHE = "/vol/data/replogle_k562_essential_gears_simulation_seed1"
 SPACES = {"pub": "/vol/checkpoints/scGPT_human",
           "bscgpt": "/vol/trackA/checkpoints/scgpt_kidney_blood_lr3e5",
-          "bjepa": "/vol/trackA/checkpoints/jepa_kidney_blood_lr3e5"}
-NAMES = {"pub": "public scGPT", "bscgpt": "blood-scGPT", "bjepa": "blood-JEPA", "expr": "gene expression (no model)"}
+          "bjepa": "/vol/trackA/checkpoints/jepa_kidney_blood_lr3e5",
+          # kidney models pretrained from scratch (A9), to test whether the JEPA trade-off is general
+          "kscgpt": "/vol/trackA/checkpoints/scgpt_kidney_lr3e5",
+          "kjepa": "/vol/trackA/checkpoints/jepa_kidney_lr3e5",
+          "kjepa_token": "/vol/trackA/checkpoints/jepa_kidney_lr3e5_token",
+          "kjepa_center": "/vol/trackA/checkpoints/jepa_kidney_lr3e5_center"}
+NAMES = {"pub": "public scGPT", "bscgpt": "blood-scGPT", "bjepa": "blood-JEPA", "expr": "gene expression (no model)",
+         "kscgpt": "kidney scGPT", "kjepa": "kidney JEPA (paper, faithful)", "kjepa_token": "kidney JEPA token",
+         "kjepa_center": "kidney JEPA center"}
 N_CTRL, N_VAL, N_TRAIN = 2048, 256, 64
 
 
@@ -100,17 +107,18 @@ def run(space: str) -> dict:
 
 
 @app.local_entrypoint()
-def main():
-    results = {r["space"]: r for r in run.map(["expr", "pub", "bscgpt", "bjepa"])}
+def main(spaces: str = "expr,pub,bscgpt,bjepa", tag: str = "A27_latent_transforms"):
+    order = spaces.split(",")
+    results = {r["space"]: r for r in run.map(order)}
     os.makedirs("diag/results", exist_ok=True)
-    json.dump(results, open("diag/results/A27_latent_transforms.json", "w"), indent=1)
+    json.dump(results, open(f"diag/results/{tag}.json", "w"), indent=1)
     L = ["| Space | Readout | Transform | VAL ID pct (31) | VAL top-1 | VAL top-3 | VAL top-10 | TRAIN ID pct (278) | TRAIN top-1 | TRAIN top-10 |",
          "|---|---|---|---|---|---|---|---|---|---|"]
-    for sp in ("expr", "pub", "bscgpt", "bjepa"):
+    for sp in order:
         for rname, res in results[sp]["readouts"].items():
             for tname, r in res.items():
                 v, t = r["val"], r.get("train")
                 L.append(f"| {NAMES[sp]} | {rname} | {tname} | {v['id_pct']:.3f} | {v['id_top1']:.3f} | {v['id_top3']:.3f} | "
                          f"{v['id_top10']:.3f} | " + (f"{t['id_pct']:.3f} | {t['id_top1']:.3f} | {t['id_top10']:.3f}" if t else "– | – | –") + " |")
-    open("diag/results/A27_latent_transforms.md", "w").write("\n".join(L) + "\n")
+    open(f"diag/results/{tag}.md", "w").write("\n".join(L) + "\n")
     print("\n".join(L))

@@ -616,6 +616,36 @@ Best transform per space (ID percentile, val / train; top-1 val / train):
   2. The JEPA trade-off is now quantified on real cells: blood-JEPA (`center`) embeddings group cell types well (A14/A15) but keep far less knockdown-specific information, even after un-smoothing.
   3. Untested: whether this is specific to `center`/continued pretraining or general to JEPA. Kidney `faithful`/`token`/`center` vs kidney scGPT would answer it cheaply.
 
+## A28. Final data collection: launched + new baselines checked on validation (Nov 7)
+
+- **GPU runs** (`diag/launch_final.py`, 11 runs on B300, ≤ 11 concurrent; our total ≤ 15 with A29):
+  - Step 3: seeds 3–5 for the three finalists (blood-JEPA → Cell-JEPA FT + contrastive; blood-scGPT → same; public scGPT → scGPT FT + contrastive), giving 5-seed arms;
+  - **no-pretraining ablation:** the same transformer with random weights → scGPT FT + contrastive, 2 seeds (new `random_init` option).
+- **New scoring rows** (`diag/retrieval.py`):
+  - **noise ceiling:** real cells, split halves, expression space;
+  - **linear models trained with the same contrastive retrieval loss** (`src/retrieval_baselines.py`), on scGPT gene vectors and on the PCA gene embedding, with weight decay chosen on validation.
+- **Check on the 31 validation genes** (`diag/results/A28_val_check_*`). ID pct / top-1 / top-3 / top-10:
+  - noise ceiling: **0.998** / 0.935 / 1.0 / 1.0
+  - **Linear on PCA gene embedding + contrastive loss: 0.785** / 0.194 / 0.323 / 0.742
+  - Linear on scGPT gene vectors + contrastive loss: 0.686 / 0.065 / 0.323 / 0.581
+  - Baseline: linear (PCA, standard): 0.578 / 0.097 / 0.226 / 0.452
+  - *(A25)* best single deep config: 0.778 / 0.34 / 0.47 / 0.69; 2-seed ensemble: 0.816 / 0.39 / 0.55 / 0.71
+- **Important:** a plain linear model trained with our contrastive loss matches the fine-tuned transformers on ID percentile (0.785 vs ~0.77–0.78 single seed). It falls behind on top-1/top-3 (0.19/0.32 vs 0.26–0.34/0.40–0.47). **The retrieval loss is doing much of the work;** the transformer's edge is at the very top of the list. Caveat: the weight decay is chosen on these same validation genes, so this number is slightly optimistic. The test split settles it.
+
+## A29. Kidney version of the JEPA trade-off test (Nov 7)
+
+Same diagnostic as A27 on the kidney models pretrained from scratch (A9; matched, lr 3e-5, 4 epochs). Real K562 cells, split halves; ID pct val (31) / train (278), `<cls>` readout. Full table: `diag/results/A29_kidney_tradeoff.md`.
+
+| Space | Raw | Whitened |
+|---|---|---|
+| **kidney scGPT** | **0.807 / 0.761** | **0.911 / 0.882** |
+| kidney JEPA (paper, `faithful`) | 0.739 / 0.592 | 0.839 / 0.736 |
+| kidney JEPA `center` | 0.786 / 0.663 | 0.812 / 0.754 |
+| kidney JEPA `token` | 0.562 / 0.611 | 0.740 / 0.709 |
+
+- **The trade-off is general:** every JEPA variant separates knockdowns worse than its matched scGPT, both from scratch on kidney (here) and continued from public scGPT on blood (A27). Whitening narrows but never closes the gap (largest-sample comparison, train genes: 0.71–0.75 vs 0.88).
+- Combined with Tasks 1/2 (kidney JEPA clusters PBMC cell types far better: 0.61 vs 0.38 zero-shot, 0.70 vs 0.50 fine-tuned), this is the paper's own hypothesis made quantitative: **JEPA embeddings gain cell-state structure and lose within-cell-type perturbation detail.**
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.

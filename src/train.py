@@ -126,6 +126,7 @@ class TrainConfig:
     selection: str = "delta_rmse"       # "delta_rmse" | "retrieval" (max validation identification percentile)
     retr_weight: float = 0.0            # >0: InfoNCE on predicted deltas vs TRAINING-perturbation mean deltas
     retr_tau: float = 0.1
+    random_init: bool = False           # A28 ablation: do not load pretrained weights (architecture of `ckpt`)
     checkpoint_selection: str = "min validation mean per-intervention delta RMSE"
     deviations: list = field(default_factory=lambda: [
         "bf16 autocast (tutorial: fp16 + GradScaler)",
@@ -166,6 +167,8 @@ class TrainConfig:
                        "per-cell deltas vs training-perturbation mean deltas (training conditions only)")
         if self.selection == "retrieval":
             dev.append("checkpoint selected by validation retrieval (id_pct), not delta RMSE")
+        if self.random_init:
+            dev.append("ABLATION: no pretrained weights loaded (random init of the same architecture)")
         self.deviations = dev
 
 
@@ -197,7 +200,7 @@ def env_info() -> dict:
 class Trainer:
     def __init__(self, ds: Dataset, ckpt_dir: str, cfg: TrainConfig, device: str = "cuda", log=print):
         self.ds, self.cfg, self.device, self.log = ds, cfg, device, log
-        self.model, self.vocab, self.ckpt_args, self.load_info = build_scgpt(ckpt_dir, cfg.seed, cfg.dropout)
+        self.model, self.vocab, self.ckpt_args, self.load_info = build_scgpt(ckpt_dir, cfg.seed, cfg.dropout, load=not cfg.random_init)
         ck_style = self.ckpt_args.get("input_style")
         if ck_style is not None:
             self.load_info["ckpt_input_style"] = ck_style

@@ -128,3 +128,15 @@ def test_embedding_baselines_select_on_val_and_recover_signal():
         assert P.shape == (10, d_g) and hp in scores
         if kind == "ridge":
             assert RT.id_scores(P, R[te])["id_top1"] >= 0.9
+
+
+def test_contrastive_linear_learns_identifiable_predictions():
+    pytest = __import__("pytest"); pytest.importorskip("torch")
+    from src.retrieval_baselines import contrastive_linear_select
+    rng = np.random.default_rng(2)
+    E = rng.normal(size=(50, 6)); A = rng.normal(size=(6, 30))
+    R = E @ A + 0.05 * rng.normal(size=(50, 30))
+    panel = np.arange(30)
+    P, wd, sc = contrastive_linear_select(E[:35], R[:35], E[35:42], R[35:42], panel, E[42:])
+    assert P.shape == (8, 30) and wd in sc
+    assert RT.id_scores(P, R[42:])["id_pct"] > 0.8

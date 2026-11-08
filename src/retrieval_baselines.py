@@ -39,3 +39,53 @@ def select_and_predict(E_train, R_train, E_val, T_val, E_eval, kind):
     scores = {g: id_scores(fit(E_train, R_train, g)(E_val), T_val)["id_pct"] for g in grid}
     best = max(grid, key=lambda g: scores[g])
     return fit(E_train, R_train, best)(E_eval), best, scores
+
+
+# ----------------------------------------------------------------------------- A28: linear + contrastive loss
+
+
+WDS = (1e-4, 1e-3, 1e-2, 1e-1)
+
+
+def contrastive_linear_fit(E, R, wd, retr_weight=1.0, tau=0.1, epochs=400, lr=1e-3, seed=0):
+    """Linear map gene-embedding -> full delta, trained like the fine-tuned models' extra loss:
+    MSE(pred, R) + retr_weight * InfoNCE(cos(pred_i, R_j) / tau, target i), on TRAINING perturbations only."""
+    import torch
+    import torch.nn.functional as F
+
+    torch.manual_seed(seed)
+    Et = torch.as_tensor(E, dtype=torch.float32)
+    Rt = torch.as_tensor(R, dtype=torch.float32)
+    mu_e = Et.mean(0)
+    lin = torch.nn.Linear(Et.shape[1], Rt.shape[1])
+    with torch.no_grad():
+        lin.bias.copy_(Rt.mean(0))
+        lin.weight.zero_()
+    opt = torch.optim.Adam(lin.parameters(), lr=lr, weight_decay=wd)
+    tgt = torch.arange(len(Et))
+    Ru = F.normalize(Rt, dim=-1)
+    for _ in range(epochs):
+        P = lin(Et - mu_e)
+        loss = F.mse_loss(P, Rt) + retr_weight * F.cross_entropy(F.normalize(P, dim=-1) @ Ru.T / tau, tgt)
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    return lambda Eq: lin(torch.as_tensor(Eq, dtype=torch.float32) - mu_e).detach().numpy()
+
+
+def contrastive_linear_select(E_train, R_train, E_val, T_val_panel, panel, E_eval):
+    """Weight decay chosen on validation id_pct (scored on the gene panel); returns eval predictions (full genes)."""
+    scores, fits = {}, {}
+    for wd in WDS:
+        f = contrastive_linear_fit(E_train, R_train, wd)
+        fits[wd] = f
+        scores[wd] = id_scores(f(E_val)[:, panel], T_val_panel)["id_pct"]
+    best = max(WDS, key=lambda w: scores[w])
+    return fits[best](E_eval), best, scores
+
+
+def pca_gene_embedding(R_train, K=10):
+    """Ahlmann-Eltze gene embedding: top-K left singular vectors of centred training responses (genes x perts)."""
+    Y = np.asarray(R_train, dtype=np.float64).T
+    U, _, _ = np.linalg.svd(Y - Y.mean(1, keepdims=True), full_matrices=False)
+    return U[:, :K]

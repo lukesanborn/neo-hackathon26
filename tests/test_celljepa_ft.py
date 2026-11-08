@@ -136,7 +136,7 @@ def fake_env(monkeypatch):
     ds = fake_dataset(n_genes=40, n_perts=12, cells=30, n_ctrl=200)
     vocab = _Vocab({"<pad>": 0, "<cls>": 1, "<eoc>": 2, **{g: i + 3 for i, g in enumerate(ds.gene_names)}})
 
-    def fake_build(ckpt_dir, seed, dropout=0.0):
+    def fake_build(ckpt_dir, seed, dropout=0.0, load=True):
         torch.manual_seed(seed)
         return FakeScGPT(len(vocab)), vocab, {"embsize": 16}, {"n_loaded": 0}
 
@@ -297,3 +297,9 @@ def test_retrieval_loss_and_selection_option(fake_env, method):
     base = _trainer(ds, method)
     out0 = base.train_step(perm[:16])
     assert "loss_retr" not in out0 and base.cfg.selection == "delta_rmse"
+
+
+def test_random_init_option_records_deviation(fake_env):
+    tr = _trainer(fake_env, "scgpt_paper", random_init=True)
+    assert tr.cfg.random_init and any("no pretrained weights" in d for d in tr.cfg.deviations)
+    assert np.isfinite(tr.train_step(np.arange(16))["loss"])

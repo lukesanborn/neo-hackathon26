@@ -95,7 +95,7 @@ def gene_vocab_ids(gene_names: list[str], vocab: SimpleVocab,
     return np.array(ids, dtype=np.int64), info
 
 
-def build_scgpt(ckpt_dir: str, seed: int, dropout: float = 0.0):
+def build_scgpt(ckpt_dir: str, seed: int, dropout: float = 0.0, load: bool = True):
     from scgpt.model import TransformerGenerator
 
     args = load_ckpt_args(ckpt_dir)
@@ -116,6 +116,8 @@ def build_scgpt(ckpt_dir: str, seed: int, dropout: float = 0.0):
         pert_pad_id=PERT_PAD_ID,
         use_fast_transformer=False,
     )
+    if not load:   # A28 ablation: same architecture/vocab, seeded random weights (no pretraining)
+        return model, vocab, args, {"n_loaded": 0, "random_init": True}
     load_info = load_pretrained(model, os.path.join(ckpt_dir, "best_model.pt"))
     return model, vocab, args, load_info
 

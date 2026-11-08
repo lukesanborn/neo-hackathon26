@@ -133,10 +133,30 @@ def run(cache: str, exps: list, split: str = "test") -> dict:
             pg, S = RT.per_gene_scores(P, T, R)
             sets[f"baselines/{kind}_scgpt_gene_emb"] = {"per_gene": pg, "S_pred": S, "P": P}
             emb_info[kind] = {"chosen": hp, "val_id_pct": sc}
+        # A28: linear models trained with the SAME contrastive retrieval loss as the fine-tuned models
+        from src.retrieval_baselines import contrastive_linear_select, pca_gene_embedding
+        G = pca_gene_embedding(R_all)
+        pca_of = lambda cs: G[[ds.gene_pos(c) for c in cs]]  # noqa: E731
+        for name, f in (("contrastive_linear_scgpt_vec", emb_of), ("contrastive_linear_pca", pca_of)):
+            Pf, wd, sc = contrastive_linear_select(f(train), R_all, f(val), T_val, genes, f(test))
+            P = Pf[:, genes]
+            pg, S = RT.per_gene_scores(P, T, R)
+            sets[f"baselines/{name}"] = {"per_gene": pg, "S_pred": S, "P": P}
+            emb_info[name] = {"chosen_weight_decay": wd, "val_id_pct": sc}
     except Exception as e:                          # never let the extra baselines break the main scoring
         emb_info["error"] = repr(e)[:300]
     pg_ub, S_ub = RT.per_gene_scores(T, T, R)
     sets[UPPER] = {"per_gene": pg_ub, "S_pred": S_ub}
+    # noise ceiling: identify half B of each evaluated gene's real cells from half A (symmetric average)
+    rng_c = np.random.default_rng(0)
+    HA, HB = [], []
+    for c in test:
+        cells = rng_c.permutation(np.flatnonzero(cond == c))
+        h = len(cells) // 2
+        HA.append((np.asarray(ds.X[np.sort(cells[:h])]).mean(0) - ctrl)[genes])
+        HB.append((np.asarray(ds.X[np.sort(cells[h:])]).mean(0) - ctrl)[genes])
+    a, b = RT.id_scores(np.stack(HA), np.stack(HB)), RT.id_scores(np.stack(HB), np.stack(HA))
+    noise_ceiling = {k: (a[k] + b[k]) / 2 for k in ("id_pct", "id_top1", "id_top3", "id_top10", "id_mean_rank")}
 
     agg = {k: RT.aggregate(v["per_gene"], RT.cluster_agreement(v["S_pred"], S_true)) for k, v in sets.items()}
     arms = RT.pool_seeds(sets)
@@ -150,7 +170,7 @@ def run(cache: str, exps: list, split: str = "test") -> dict:
     pairs += [(a, b) for a, b in PAIRS if a in arms and b in arms]
     diffs = [{"a": a, "b": b, **RT.diff_ci(point, draws, a, b)} for a, b in pairs]
     return RT.json_safe({
-        "cache": cache, "exps": exps, "split": split, "embedding_baselines": emb_info, "n_test": len(test), "n_ref": len(train), "n_genes": int(len(genes)),
+        "cache": cache, "exps": exps, "split": split, "embedding_baselines": emb_info, "noise_ceiling": noise_ceiling, "n_test": len(test), "n_ref": len(train), "n_genes": int(len(genes)),
         "n_boot": N_BOOT, "boot_seed": 0, "test_conditions": test, "skipped": skipped, "metrics": list(RT.METRICS),
         "aggregates": agg,
         "set_per_gene": {s: d["per_gene"] for s, d in sets.items()},
@@ -195,6 +215,8 @@ DISPLAY = {
     "baselines/linear": "Baseline: linear (PCA gene embedding, Ahlmann-Eltze et al. 2025)",
     "baselines/ridge_scgpt_gene_emb": "scGPT gene vectors only, no model (ridge)",
     "baselines/knn_scgpt_gene_emb": "scGPT gene vectors only, no model (kNN)",
+    "baselines/contrastive_linear_scgpt_vec": "Linear on scGPT gene vectors + contrastive loss (no transformer)",
+    "baselines/contrastive_linear_pca": "Linear on PCA gene embedding + contrastive loss",
     "baselines/training_mean": "Training mean (same prediction for every gene)",
     "baselines/no_change": "No change (control)",
 }
