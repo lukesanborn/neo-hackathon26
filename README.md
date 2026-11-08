@@ -7,6 +7,8 @@ fine-tuning improve prediction of expression changes for **held-out** gene knock
 This is **Track B: our JEPA adaptation** of public pretrained scGPT. It is *not* a
 reproduction of Cell-JEPA (no kidney pretraining; see `outline.md` §4).
 
+**Building on our pretrained checkpoints (blood / kidney, JEPA vs scGPT):** see `docs/checkpoints.md`. Run log: `attempts.md`.
+
 ## Layout
 
 ```text
