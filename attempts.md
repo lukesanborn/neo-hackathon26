@@ -651,6 +651,23 @@ Paired test differences (bootstrap over genes, average of the 4 configs):
 5. **Best model on test:** blood-scGPT (A23) + Cell-JEPA FT + retrieval loss, **0.762**, tied with public scGPT + retrieval loss (0.751–0.760). The jump from A22's 0.680 comes from **the contrastive retrieval loss + validation selection (A24/A25)**, not from any pretraining objective. Every top config beats scGPT's gene vectors alone by ~0.08.
 6. Product takeaway: the reliable levers are a strong pretrained start (whole-human or blood-adapted) plus a retrieval-shaped fine-tune objective. Neither JEPA variant in pretraining (whole-cell `center` or gene-level X1) has improved identification once these are in place.
 
+## XM15. Dual mask acc (X1) on blood at mask ratio 0.15 (Nov 8, Mona)
+
+Question: was X1-blood's deficit vs blood-scGPT (XC: −0.028) caused by its 25% mask ratio, since A23 used 15%? Identical to XC X1-blood except `mask_ratio=0.15` (tag `blood_ijepa_m15`, start `s2bijepa15`). Same A25 fine-tune grid. Best val recon 11.39. Results in `diag/results/XM15_replogle_{val,test}_retrieval_ci.*`.
+
+Test, 103 genes, ID percentile, average of the 4 fine-tune configs (2 seeds each):
+
+| Arm | sp r0 | sp r1 | cj r0 | cj r1 | avg |
+|---|---|---|---|---|---|
+| blood-scGPT (A23) | 0.722 | 0.766 | 0.715 | 0.757 | **0.740** |
+| blood-JEPA center (A23) | 0.711 | 0.748 | 0.719 | 0.741 | 0.730 |
+| X1-blood, 25% | 0.692 | 0.727 | 0.689 | 0.744 | 0.713 |
+| **X1-blood, 15%** | 0.599 | 0.615 | 0.718 | 0.637 | **0.642** |
+
+- 15% − 25%: **−0.071 [−0.094, −0.048]**. 15% − blood-scGPT: −0.098 [−0.125, −0.071].
+- Unstable: `scgpt_paper_s1_s2bijepa15_r0` scores exactly 0.500, the constant-output fine-tune failure (open question 3). The other runs range from 0.58 to 0.72.
+- **Conclusion:** the mask ratio does not explain X1's deficit. Lowering it to 15% makes the gene-level objective clearly worse.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.

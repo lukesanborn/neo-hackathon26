@@ -13,6 +13,7 @@ IDS, KEY, RUN, TAG = sys.argv[1:5]
 M = "../.venv/bin/modal"
 log = lambda *a: print(time.strftime("%H:%M:%S"), *a, flush=True)  # noqa: E731
 seen = None
+t_first = time.time()   # if no training line ever appears, the stall clock runs from the first check
 
 
 def status(i):
@@ -48,7 +49,9 @@ while True:
             log(f"pretrain epoch {r['epoch']} step {r['step']}/61875 recon {r['recon']:.2f} jepa {r['jepa']:.4f} "
                 f"ref {r['jepa_const_ref']:.3f}")
         except Exception as e:
-            log("pretrain: no log yet", repr(e)[:120])
+            log("pretrain: no training lines yet", repr(e)[:80])
+            if seen is None and time.time() - t_first > 60 * 60:
+                bad[KEY] = "no training log line within 60 min of the first check"
     elif st == "done" and KEY + " chained" not in ids:
         r = modal.FunctionCall.from_id(ids[KEY]).get()
         log("pretraining", r["status"], "best_val_recon", r.get("best_val_recon"))
