@@ -581,6 +581,20 @@ All runs select their checkpoint by validation ID percentile. Experiment `replog
 
 **Bottom line of the screen:** the contrastive loss, blood pretraining and ensembling each help; **JEPA (in pretraining or in fine-tuning) does not move retrieval** in this setup. No deep-config difference is resolved on 31 genes.
 
+## A26. Latent-space retrieval (branch `dangelo/latent-retrieval`): stopped at the sanity checks (Nov 7)
+
+**Idea:** score retrieval in a pretrained model's *embedding* space (mean L2-normalised `<cls>` embedding of a knockdown's cells minus that of control cells) instead of in expression space, hoping JEPA's better-organised space (Tasks 1/2) would make predictions easier to match. Code: `src/latent_retrieval.py`, `diag/latent_retrieval.py`. Predicted cells are turned into encoder input by keeping each predicted cell's top-k genes (k = genes expressed by its paired real control cell) and binning them like real data. Only the `refs` stage ran (3 GPU jobs, ~$2); validation split, 31 genes.
+
+| Embedding space | **Ceiling:** real cells, split halves (ID pct / top-1) | **Oracle:** control + TRUE mean delta through the conversion (ID pct / top-1) |
+|---|---|---|
+| public scGPT | **0.935** / 0.74 | 0.687 / 0.10 |
+| blood-scGPT | 0.910 / 0.55 | 0.518 / 0.03 |
+| **blood-JEPA (`center`)** | **0.685** / **0.06** | 0.591 / 0.06 |
+
+- **The predicted-cell → encoder conversion destroys most of the signal.** Even the perfect answer only reaches 0.52–0.69, below the expression-space models (~0.77, A25). Knockdown effects are small shifts across many genes, and these barely change a cell's top-expressed, rank-binned gene set. **Idea #1 cannot beat expression-space retrieval for any model; the 24 prediction jobs were not run.**
+- **Real finding:** on *real* cells, blood-JEPA's embedding space separates knockdowns far worse than scGPT's (0.685 vs 0.91–0.94 ID percentile; top-1 0.06 vs 0.55–0.74). Yet JEPA embeddings cluster *cell types* much better (PBMC, A14/A15). **JEPA (center) embeddings are more invariant to within-cell-type perturbation changes.** This matches the Cell-JEPA paper's own explanation for its weak delta metrics ("features invariant across masked views ... may suppress sensitivity to perturbation-induced deviations").
+- Caveats: one JEPA variant (`center`, continued from public scGPT, 2 epochs); 31 genes; the ceiling uses ≤256 cells per knockdown split in half.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.
