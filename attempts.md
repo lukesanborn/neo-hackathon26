@@ -472,6 +472,37 @@ Goal of the scoped program: on Replogle's 103 held-out genes, find the setup tha
   - kidney arms ≈ chance on id_pct (0.49–0.55)
 - **Takeaways:** ensembling helps top-1/top-3. The new ridge baseline is a tougher competitor. Kidney checkpoints carry little gene-specific signal.
 
+## A22. Replogle K562 fine-tunes, retrieval on 103 held-out genes (Nov 7)
+
+8 runs launched 16:01 (`diag/launch_replogle_ft.py`), all completed. Scored with `diag/retrieval.py --exps replogle_k562_v1 --tag A22_replogle` (test split, 103 genes, 278 training perturbations as reference, paired bootstrap 2,000×). Full tables in `diag/results/A22_replogle_retrieval_ci.*`. Note: the experiment directory also contains single-seed `celljepa_mk_*` runs that we did not launch (a masking-strategy sweep, most likely Luke's). They are scored too; they land at id_pct 0.67–0.69, like public scGPT.
+
+Values are mean [95% CI]; chance id_pct = 0.5, top-1 = 0.01.
+
+| Predictions | id_pct | top-1 | top-3 | neighbour Spearman |
+|---|---|---|---|---|
+| public scGPT → Cell-JEPA FT (2 seeds) | 0.688 [0.63, 0.75] | 0.121 [0.07, 0.18] | 0.180 | 0.606 |
+| public scGPT → scGPT+ECS FT (2 seeds) | 0.680 [0.62, 0.74] | 0.141 [0.08, 0.21] | 0.214 | 0.607 |
+| kidney scGPT → scGPT FT | 0.590 | 0.092 | 0.121 | 0.448 |
+| kidney JEPA → Cell-JEPA FT | 0.584 | 0.073 | 0.107 | 0.384 |
+| **ridge on scGPT gene embeddings (new baseline)** | **0.675** [0.62, 0.73] | 0.019 | 0.068 | 0.453 |
+| kNN on scGPT gene embeddings | 0.624 | 0.058 | 0.165 | 0.505 |
+| linear (old baseline) | 0.542 | 0.010 | 0.049 | 0.548 |
+| training mean | 0.500 | 0.010 | 0.029 | 0.513 |
+
+Paired differences (public-scGPT arms − ridge baseline):
+- **id_pct: +0.004 to +0.014, CIs include 0.** On the pre-declared primary metric, the fine-tuned models do not beat the gene-embedding ridge baseline.
+- **top-1: +0.10 to +0.12, CIs exclude 0** (e.g. scGPT FT +0.121 [0.058, 0.189]).
+- **top-3: +0.11 to +0.15, CIs exclude 0.**
+- **neighbour Spearman: +0.15 to +0.18, CIs exclude 0.**
+- vs old linear: +0.14 id_pct, CIs exclude 0.
+
+**Conclusions:**
+- **Deep models beat linear decisively on 103 genes,** confirming the Adamson trend.
+- **Against the stronger ridge baseline, the picture splits by metric.** Ridge ranks the right gene "roughly high" just as well (same id_pct), but the fine-tuned models put it **at the very top** far more often (top-1 6–7× higher). They also rank the measured knockdowns it resembles much better.
+- **JEPA vs non-JEPA FT on public scGPT: no difference** (id_pct 0.688 vs 0.680; top-1 0.121 vs 0.141).
+- **Kidney checkpoints are clearly worse than public scGPT,** and worse than ridge on id_pct.
+- 2-seed ensembles change little on Replogle.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.
