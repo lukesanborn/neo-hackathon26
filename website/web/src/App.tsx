@@ -214,7 +214,7 @@ export default function App() {
     <div className="flex min-h-dvh w-full max-w-full flex-col overflow-x-clip">
       <header className="sticky top-0 z-20 flex min-h-[58px] items-center gap-3 border-b border-border bg-white px-4 py-2.5">
         <img
-          className="h-10 w-10 shrink-0 rounded-lg bg-neutral-900 object-contain p-0.5"
+          className="h-10 w-10 shrink-0 rounded-lg bg-[#111111] object-contain p-0.5"
           src="/logo.png"
           alt="blood JEPA logo"
         />

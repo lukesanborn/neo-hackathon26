@@ -68,7 +68,7 @@
   @apply relative h-[120px] w-[120px];
 }
 .orbit-logo {
-  @apply absolute top-1/2 left-1/2 z-[1] h-11 w-11 -translate-x-1/2 -translate-y-1/2 rounded-[10px] bg-neutral-900 object-contain p-1;
+  @apply absolute top-1/2 left-1/2 z-[1] h-11 w-11 -translate-x-1/2 -translate-y-1/2 rounded-[10px] bg-[#111111] object-contain p-1;
 }
 .orbit-ring {
   @apply absolute inset-1 animate-[spin_1.4s_linear_infinite] rounded-full border-[10px] border-lilac border-r-transparent border-b-transparent;
