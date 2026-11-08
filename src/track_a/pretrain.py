@@ -40,6 +40,10 @@ from .pretrain_model import (CLS_VALUE, DEVIATIONS, MASK_VALUE, OBJECTIVES, PAD_
                              CLSPredictor, JEPA_VARIANTS, VARIANT_DESCRIPTIONS, build_student, ema_update,
                              forward_losses, make_teacher,
                              random_value_mask)
+from .masking import MASK_UNIT_DESCRIPTIONS, MASK_UNITS, UNIT_FILE_KINDS, make_masker
+from .perturb_pairs import PAIR_DEVIATION, PairSampler
+
+VIEW_MODES = ("same_cell", "perturb_pair")
 
 PAPER_N_CELLS = 814_000
 # Cell-JEPA App. E.1: "Training is conducted on the Kidney dataset for a total of 4 epochs" (batch 32):
@@ -71,6 +75,14 @@ class PretrainConfig:
     # data
     max_genes: int = 600            # nonzero genes sampled per cell (+ <cls> = 601 tokens)
     mask_ratio: float = 0.15
+    # views knob 2a (src/track_a/masking.py): random | program | pathway | top_expressed.
+    # program / pathway need a units file (modal_pretrain.build_mask_units).
+    mask_unit: str = "random"
+    mask_units_path: str | None = None
+    # JEPA views (A28): same_cell = masked cell vs the same full cell (Cell-JEPA); perturb_pair = teacher
+    # encodes pair_k OTHER cells of the same knockdown (needs a cache with groups.npy, perturb_pairs.py)
+    view_mode: str = "same_cell"
+    pair_k: int = 1
     n_bins: int = 50
     max_cells_per_epoch: int | None = None
     max_val_cells: int = 4096
@@ -102,6 +114,21 @@ class PretrainConfig:
     def __post_init__(self):
         assert self.objective in OBJECTIVES, self.objective
         assert self.jepa_variant in JEPA_VARIANTS, self.jepa_variant
+        assert self.mask_unit in MASK_UNITS, self.mask_unit
+        assert 0.0 < self.mask_ratio < 1.0, self.mask_ratio
+        assert self.view_mode in VIEW_MODES, self.view_mode
+        if self.view_mode == "perturb_pair":
+            assert self.objective == "jepa", "perturb_pair views only apply to the jepa objective"
+            assert self.jepa_variant in ("faithful", "center"), "perturb_pair supports <cls> targets only"
+            assert self.pair_k >= 1, self.pair_k
+            if PAIR_DEVIATION not in self.deviations:
+                self.deviations = list(self.deviations) + [PAIR_DEVIATION]
+        if self.mask_unit in UNIT_FILE_KINDS and not self.mask_units_path:
+            raise ValueError(f"mask_unit={self.mask_unit!r} needs mask_units_path")
+        if self.mask_unit != "random":
+            d = MASK_UNIT_DESCRIPTIONS[self.mask_unit]
+            if d not in self.deviations:
+                self.deviations = list(self.deviations) + [d]
         if self.objective == "jepa" and self.jepa_variant != "faithful":
             d = VARIANT_DESCRIPTIONS[self.jepa_variant]
             if d not in self.deviations:
@@ -216,6 +243,9 @@ class KidneyCache:
         self.train = np.setdiff1d(np.arange(self.n_cells, dtype=np.int64), self.val, assume_unique=True)
         mpath = os.path.join(cache_dir, "manifest.json")
         self.manifest = json.load(open(mpath)) if os.path.exists(mpath) else {}
+        gpath = os.path.join(cache_dir, "groups.npy")   # perturbation-pair caches only
+        self.groups = np.load(gpath) if os.path.exists(gpath) else None
+        assert self.groups is None or len(self.groups) == self.n_cells, "groups.npy length != n_cells"
 
     def cell(self, g: int):
         s = int(np.searchsorted(self.offsets, g, side="right") - 1)
@@ -230,9 +260,12 @@ class KidneyCache:
 
 
 def collate(cache: KidneyCache, cells: np.ndarray, max_genes: int, mask_ratio: float, rng: np.random.Generator,
-            cls_id: int, pad_id: int) -> dict:
+            cls_id: int, pad_id: int, masker=None) -> dict:
     """<cls> + up to ``max_genes`` uniformly sampled nonzero genes per cell, right-padded to the
-    batch max. Returns numpy arrays: gene_ids, values (true bins; cls 0, pad -2), masked, pad."""
+    batch max. Returns numpy arrays: gene_ids, values (true bins; cls 0, pad -2), masked, pad.
+
+    ``masker`` (from ``masking.make_masker``) replaces random value masking; None keeps the
+    original random path (same RNG draws, so earlier checkpoints stay reproducible)."""
     seqs = []
     for g in cells:
         gi, bi = cache.cell(int(g))
@@ -251,8 +284,13 @@ def collate(cache: KidneyCache, cells: np.ndarray, max_genes: int, mask_ratio: f
         gene_ids[b, 1:1 + n] = gi
         values[b, 1:1 + n] = bi
         pad[b, 1:1 + n] = False
-    masked = random_value_mask(ns, L, mask_ratio, rng)
-    return {"gene_ids": gene_ids, "values": values, "masked": masked, "pad": pad, "n_genes": ns}
+    fallback = 0
+    if masker is None:
+        masked = random_value_mask(ns, L, mask_ratio, rng)
+    else:
+        masked, fallback = masker(gene_ids, values, ns, mask_ratio, rng)
+    return {"gene_ids": gene_ids, "values": values, "masked": masked, "pad": pad, "n_genes": ns,
+            "mask_fallback": fallback}
 
 
 def batch_rng(seed: int, epoch: int, step: int) -> np.random.Generator:
@@ -268,13 +306,28 @@ def val_cells(cache: KidneyCache, cfg: PretrainConfig) -> np.ndarray:
     return np.random.default_rng([cfg.seed, VAL_EPOCH_KEY]).permutation(cache.val)[: cfg.max_val_cells]
 
 
-def iter_batches(cache, cfg, cells, epoch, start_step, cls_id, pad_id, threads: int, prefetch: int):
+def add_pair_views(nb: dict, cache, cfg, cells, sampler, rng_key, cls_id, pad_id) -> dict:
+    """Attach the teacher's view (t_gene_ids / t_values / t_pad, B*pair_k rows): other cells of the same
+    knockdown. Uses its own RNG stream so the student batch is identical to a same_cell run."""
+    if sampler is None:
+        return nb
+    rng = np.random.default_rng([*rng_key, 13])
+    partners = sampler.sample(cells, cfg.pair_k, rng)
+    tb = collate(cache, partners, cfg.max_genes, cfg.mask_ratio, rng, cls_id, pad_id)
+    nb.update({"t_gene_ids": tb["gene_ids"], "t_values": tb["values"], "t_pad": tb["pad"]})
+    return nb
+
+
+def iter_batches(cache, cfg, cells, epoch, start_step, cls_id, pad_id, threads: int, prefetch: int, masker=None,
+                 sampler=None):
     """Yields (step, numpy batch) in order, built by a small thread pool with lookahead."""
     steps = math.ceil(len(cells) / cfg.batch_size)
 
     def make(s):
         b = cells[s * cfg.batch_size:(s + 1) * cfg.batch_size]
-        return collate(cache, b, cfg.max_genes, cfg.mask_ratio, batch_rng(cfg.seed, epoch, s), cls_id, pad_id)
+        nb = collate(cache, b, cfg.max_genes, cfg.mask_ratio, batch_rng(cfg.seed, epoch, s), cls_id, pad_id,
+                     masker)
+        return add_pair_views(nb, cache, cfg, b, sampler, (cfg.seed, epoch, s), cls_id, pad_id)
 
     with ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
         futs = {}
@@ -314,10 +367,19 @@ class Pretrainer:
                         dtype=torch.bfloat16, enabled=cfg.precision == "bf16")
         self.cls_id, self.pad_id = vocab["<cls>"], vocab["<pad>"]
         self.jepa_state: dict = {}   # e.g. the EMA centre for jepa_variant="center"
+        # views knob 2a: None = original random masking
+        self.masker, self.mask_info = make_masker(cfg.mask_unit, cfg.mask_units_path)
+
+    @staticmethod
+    def mask_stats(nb: dict) -> dict:
+        """Realised masked fraction of gene tokens, and fraction of cells that fell back to random."""
+        n = max(int(nb["n_genes"].sum()), 1)
+        return {"mask_frac": torch.tensor(float(nb["masked"].sum()) / n),
+                "mask_fallback": torch.tensor(float(nb.get("mask_fallback", 0)) / max(len(nb["n_genes"]), 1))}
 
     def to_device(self, nb: dict) -> dict:
-        return {k: torch.from_numpy(nb[k]).to(self.device, non_blocking=True)
-                for k in ("gene_ids", "values", "masked", "pad")}
+        keys = ("gene_ids", "values", "masked", "pad", "t_gene_ids", "t_values", "t_pad")
+        return {k: torch.from_numpy(nb[k]).to(self.device, non_blocking=True) for k in keys if k in nb}
 
     def train_step(self, nb: dict, epoch: int = 0, step: int = 0) -> dict:
         """One optimiser step. Returns detached loss tensors (no host sync).
@@ -338,10 +400,11 @@ class Pretrainer:
             ema_update(self.teacher, self.model, self.cfg.ema_momentum)
         res = {k: v.detach() for k, v in out.items()}
         res["grad_norm"] = gn.detach()
+        res.update(self.mask_stats(nb))
         return res
 
     @torch.no_grad()
-    def validate(self, cache: KidneyCache, cells: np.ndarray) -> dict:
+    def validate(self, cache: KidneyCache, cells: np.ndarray, sampler=None) -> dict:
         self.model.eval()
         if self.predictor is not None:
             self.predictor.eval()
@@ -349,18 +412,23 @@ class Pretrainer:
         bs = self.cfg.batch_size
         for i in range(0, len(cells), bs):
             nb = collate(cache, cells[i:i + bs], self.cfg.max_genes, self.cfg.mask_ratio,
-                         batch_rng(self.cfg.seed, VAL_EPOCH_KEY, i // bs), self.cls_id, self.pad_id)
+                         batch_rng(self.cfg.seed, VAL_EPOCH_KEY, i // bs), self.cls_id, self.pad_id, self.masker)
+            nb = add_pair_views(nb, cache, self.cfg, cells[i:i + bs], sampler, (self.cfg.seed, VAL_EPOCH_KEY, i // bs),
+                                self.cls_id, self.pad_id)
             out = forward_losses(self.cfg.objective, self.model, self.teacher, self.predictor, self.to_device(nb),
                                  self.cfg.nhead, self.amp, self.cfg.jepa_variant, self.jepa_state)
             # recon: token-weighted (exact mean over all masked tokens); jepa: cell-weighted
             w_tok, w_cell = float(nb["masked"].sum()), len(nb["gene_ids"])
             sums["recon"] = sums.get("recon", 0.0) + float(out["recon"]) * w_tok
             n_tok += w_tok
+            sums["mask_tok"] = sums.get("mask_tok", 0.0) + w_tok
+            sums["gene_tok"] = sums.get("gene_tok", 0.0) + float(nb["n_genes"].sum())
             for k in ("jepa", "teacher_cls_std", "target_spread", "teacher_tok_std", "var_loss"):
                 if k in out:
                     sums[k] = sums.get(k, 0.0) + float(out[k]) * w_cell
             n_cell += w_cell
-        res = {"val_recon": sums["recon"] / max(n_tok, 1.0)}
+        res = {"val_recon": sums["recon"] / max(n_tok, 1.0),
+               "val_mask_frac": sums["mask_tok"] / max(sums["gene_tok"], 1.0)}
         if "jepa" in sums:
             res["val_jepa"] = sums["jepa"] / max(n_cell, 1)
             for k in ("teacher_cls_std", "target_spread", "teacher_tok_std", "var_loss"):
@@ -437,6 +505,13 @@ def run_pretraining(cfg: PretrainConfig, cache_dir: str, vocab_path: str, run_di
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
     tr = Pretrainer(cfg, vocab, device)
+    train_sampler = val_sampler = None
+    pair_info = None
+    if cfg.view_mode == "perturb_pair":
+        if cache.groups is None:
+            raise ValueError(f"view_mode=perturb_pair needs a cache with groups.npy: {cache_dir}")
+        train_sampler, val_sampler = PairSampler(cache.groups, cache.train), PairSampler(cache.groups, cache.val)
+        pair_info = {"train": train_sampler.stats(), "val": val_sampler.stats()}
 
     last_path = os.path.join(run_dir, "last.pt")
     best_path = os.path.join(run_dir, "best_student.pt")
@@ -461,7 +536,8 @@ def run_pretraining(cfg: PretrainConfig, cache_dir: str, vocab_path: str, run_di
         log("resumed", epoch=epoch, step=step0, global_step=global_step, best_val_recon=best)
         del ck
 
-    meta = {**asdict(cfg), "init_state_hash": tr.init_hash, "init_ckpt_info": tr.init_info, "n_cells": cache.n_cells, "n_train": len(cache.train),
+    meta = {**asdict(cfg), "init_state_hash": tr.init_hash, "init_ckpt_info": tr.init_info, "mask_info": tr.mask_info, "pair_info": pair_info,
+            "n_cells": cache.n_cells, "n_train": len(cache.train),
             "n_val": len(cache.val), "n_val_used": len(vcells), "nnz": cache.nnz_stats(),
             "cache_dir": cache_dir, "cache_manifest": cache.manifest, "environment": env_info(),
             "steps_per_epoch": math.ceil(len(epoch_cells(cache, cfg, 0)) / cfg.batch_size)}
@@ -479,7 +555,7 @@ def run_pretraining(cfg: PretrainConfig, cache_dir: str, vocab_path: str, run_di
 
     def do_val(tag):
         nonlocal best, best_epoch
-        v = tr.validate(cache, vcells)
+        v = tr.validate(cache, vcells, val_sampler)
         improved = v["val_recon"] < best
         if improved:
             best, best_epoch = v["val_recon"], tag
@@ -499,7 +575,7 @@ def run_pretraining(cfg: PretrainConfig, cache_dir: str, vocab_path: str, run_di
         t_ep = time.time()
         acc, n_acc, stopped_at = None, 0, None
         for s, nb in iter_batches(cache, cfg, cells, epoch, step0, tr.cls_id, tr.pad_id,
-                                  cfg.loader_threads, cfg.prefetch):
+                                  cfg.loader_threads, cfg.prefetch, tr.masker, train_sampler):
             if time.time() - t_start > budget_s - reserve_s:
                 stopped_at = s
                 break
@@ -578,6 +654,7 @@ def export_checkpoint(run_dir: str, export_dir: str, vocab: SimpleVocab, meta: d
         "checkpoint_selection": meta["checkpoint_selection"], "best_model": "student state_dict at best_epoch",
         "last_model": "student state_dict at the end of the latest call",
         "max_genes": meta["max_genes"], "mask_ratio": meta["mask_ratio"], "batch_size": meta["batch_size"],
+        "mask_unit": meta.get("mask_unit", "random"), "mask_info": meta.get("mask_info"),
         "lr": meta["lr"], "weight_decay": meta["weight_decay"], "lr_step_gamma": meta["lr_step_gamma"],
         "max_cells_per_epoch": meta["max_cells_per_epoch"], "grad_clip": meta["grad_clip"],
         "ema_momentum": meta["ema_momentum"] if meta["objective"] == "jepa" else None,

@@ -28,7 +28,8 @@ import modal
 
 from environment.image import build_image
 
-APP_NAME = "jepa-perturb"
+# see modal_pretrain.py: JEPA_APP_SUFFIX keeps a branch deploy from replacing a shared app.
+APP_NAME = f"jepa-perturb{os.environ.get('JEPA_APP_SUFFIX', '')}"
 VOL_PATH = "/vol"
 DEFAULT_EXP = "adamson_trackB_v1"
 TRAIN_GPU = "H100"

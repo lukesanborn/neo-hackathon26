@@ -28,7 +28,7 @@ import modal
 
 from environment.census_image import PYTHON_VERSION, build_census_image
 
-APP_NAME = "jepa-census"
+APP_NAME = f"jepa-census{os.environ.get('JEPA_APP_SUFFIX', '')}"  # see modal_pretrain.py
 VOL_PATH = "/vol"
 VOCAB_PATH = f"{VOL_PATH}/checkpoints/scGPT_human/vocab.json"
 # output dirs: src/track_a/census.py CORPORA[name]["out"] / ["smoke_out"]

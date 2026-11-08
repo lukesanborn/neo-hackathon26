@@ -73,6 +73,32 @@ CORPORA: dict[str, dict] = {
                      "and K562 (leukemia, bone-marrow lineage) evaluations: healthy blood + bone "
                      "marrow, 2M-cell seeded random sample, PBMC-10K eval datasets screened out.",
     },
+    # Corpora for the 2a/2b knob sweep: a broad human corpus (what scGPT_human itself was built
+    # from, subsampled) and the complete blood+marrow set rather than the 2M sample.
+    "human_3M": {
+        "filter": "disease == 'normal' and suspension_type != 'na'",
+        "out": "/vol/trackA/human_census_2023-05-15_3M",
+        "smoke_out": "/vol/smoke/census/human_census_2023-05-15",
+        "max_cells": 3_000_000,
+        "sample": "random",
+        "sample_seed": 0,
+        "leakage_check": True,
+        "rationale": "All healthy human tissues (scGPT_human's own corpus shape), 3M-cell seeded "
+                     "random sample: tests whether the masking knobs behave differently when "
+                     "pretraining is broad rather than single-tissue.",
+    },
+    "blood_marrow_full": {
+        "filter": "tissue_general in ['blood', 'bone marrow'] and disease == 'normal' "
+                  "and suspension_type != 'na'",
+        "out": "/vol/trackA/blood_marrow_census_2023-05-15_full",
+        "smoke_out": "/vol/smoke/census/blood_marrow_full_census_2023-05-15",
+        "max_cells": None,            # every matching cell (~5.17M), not the 2M sample
+        "sample": "first",
+        "leakage_check": True,
+        "rationale": "Every healthy blood + bone-marrow cell in the release (~5.17M). Closest "
+                     "tissue match to the K562 evaluation, so pretraining gains have the best "
+                     "chance of transferring to the perturbation benchmarks.",
+    },
 }
 
 # PBMC-10K evaluation data = 10x Genomics public datasets pbmc4k + pbmc8k (2017). A Census

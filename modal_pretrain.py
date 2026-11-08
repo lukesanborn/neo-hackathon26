@@ -34,7 +34,11 @@ import modal
 
 from environment.image import build_image
 
-APP_NAME = "jepa-pretrain"
+# JEPA_APP_SUFFIX deploys this app under its own name (e.g. "jepa-pretrain-rhea") so an
+# experiment branch can be deployed into a shared workspace without replacing the code that
+# someone else's running jobs use. The Volume is shared either way.
+APP_SUFFIX = os.environ.get("JEPA_APP_SUFFIX", "")
+APP_NAME = f"jepa-pretrain{APP_SUFFIX}"
 VOL_PATH = "/vol"
 GPU = "H100"
 VOCAB = f"{VOL_PATH}/checkpoints/scGPT_human/vocab.json"
@@ -141,6 +145,94 @@ def export(objective: str, smoke: bool = False, tag: str = "v1") -> dict:
     return _plain(out)
 
 
+PERTURB_PAIR_CACHE = f"{VOL_PATH}/trackA/replogle_train_pairs_d4237826c68c"
+REPLOGLE_CACHE = f"{VOL_PATH}/data/replogle_k562_essential_gears_simulation_seed1"
+
+
+@app.function(image=image, volumes={VOL_PATH: vol}, cpu=8, memory=65536, timeout=3600)
+def build_perturb_cache(force: bool = False) -> dict:
+    """A28: pretraining cache of Replogle TRAINING-condition cells (+ controls) with per-cell knockdown groups,
+    for view_mode="perturb_pair". Validation / test knockdowns are excluded (src/track_a/perturb_pairs.py)."""
+    from src.data import load_cache
+    from src.models import HGNC_ALIASES
+    from src.track_a.perturb_pairs import build_perturb_cache as build
+
+    vol.reload()
+    out = PERTURB_PAIR_CACHE
+    if not force and os.path.exists(os.path.join(out, "manifest.json")):
+        return _plain(json.load(open(os.path.join(out, "manifest.json"))))
+    ds = load_cache(REPLOGLE_CACHE, mmap=True)
+    assert (ds.manifest or {}).get("split_hash", "d4237826c68c") == "d4237826c68c", ds.manifest.get("split_hash")
+    vocab = json.load(open(VOCAB))
+    al = {**HGNC_ALIASES, **((ds.manifest or {}).get("extra_hgnc_aliases") or {})}
+    man = build(ds, out, vocab, al)
+    vol.commit()
+    return _plain(man)
+
+
+MASK_UNITS_DIR = f"{VOL_PATH}/trackA/mask_units"
+ENRICHR_URL = "https://maayanlab.cloud/Enrichr/geneSetLibrary?mode=text&libraryName={}"
+
+
+def mask_units_path(kind: str, n_programs: int = 64, library: str = "MSigDB_Hallmark_2020",
+                    cache: str | None = None) -> str:
+    """Canonical units-file path for views knob 2a (``PretrainConfig.mask_units_path``).
+
+    Programs are co-expression clusters learned FROM a corpus, so the corpus is part of the
+    identity: kidney programs are not blood programs and must not share a filename. Pathways are
+    an external gene-set library and are corpus-independent."""
+    if kind != "program":
+        return os.path.join(MASK_UNITS_DIR, f"pathway_{library}.json")
+    corpus = os.path.basename((cache or REAL["cache"]).rstrip("/"))
+    return os.path.join(MASK_UNITS_DIR, f"program_k{n_programs}__{corpus}.json")
+
+
+@app.function(image=image, volumes={VOL_PATH: vol}, cpu=8, memory=65536, timeout=3600)
+def build_mask_units(kind: str = "program", n_programs: int = 64, n_cells: int = 30000, min_cells: int = 20,
+                     library: str = "MSigDB_Hallmark_2020", seed: int = 0, cache: str | None = None,
+                     force: bool = False) -> dict:
+    """Write the units file for mask_unit="program" or "pathway" (views knob 2a).
+
+    program: co-expression programs clustered from ``n_cells`` TRAINING cells of the pretraining cache
+             (validation cells are never read). pathway: an Enrichr text library (default MSigDB Hallmark),
+             symbols mapped to the scGPT vocab. Both report token coverage on the sampled cells."""
+    import urllib.request
+
+    import numpy as np
+
+    from src.track_a.masking import build_programs, gene_sets_to_units, parse_gene_sets, token_coverage
+    from src.track_a.pretrain import KidneyCache
+
+    vol.reload()
+    out = mask_units_path(kind, n_programs, library, cache)
+    if os.path.exists(out) and not force:
+        d = json.load(open(out))
+        return _plain({"path": out, "existing": True, "stats": d.get("stats")})
+    c = KidneyCache(_cache_dir(REAL, cache))
+    rng = np.random.default_rng(seed)
+    pick = np.sort(rng.choice(c.train, size=min(n_cells, len(c.train)), replace=False))
+    cells = [c.cell(int(g)) for g in pick]
+    if kind == "program":
+        d = build_programs(cells, n_programs=n_programs, min_cells=min_cells, seed=seed)
+        d["source"] = f"co-expression programs from {len(cells)} training cells of {c.cache_dir}"
+    elif kind == "pathway":
+        url = ENRICHR_URL.format(library)
+        with urllib.request.urlopen(url, timeout=120) as r:
+            text = r.read().decode()
+        stoi = json.load(open(VOCAB))
+        units, names, stats = gene_sets_to_units(parse_gene_sets(text), stoi)
+        stats["token_coverage"] = token_coverage(units, cells)
+        d = {"kind": "pathway", "units": units, "unit_names": names, "stats": stats, "source": url}
+    else:
+        raise ValueError(f"kind must be program or pathway, got {kind!r}")
+    os.makedirs(MASK_UNITS_DIR, exist_ok=True)
+    with open(out + ".tmp", "w") as f:
+        json.dump(d, f)
+    os.replace(out + ".tmp", out)
+    vol.commit()
+    return _plain({"path": out, "existing": False, "stats": d["stats"]})
+
+
 @app.function(image=image, volumes={VOL_PATH: vol}, cpu=4, memory=32768, timeout=1800)
 def integration_check(smoke: bool = True, objectives: str = "jepa,scgpt", tag: str = "v1") -> dict:
     """Load each export into the fine-tuning model exactly as units 3/5 will."""
@@ -241,6 +333,15 @@ def main(stage: str = "smoke", objectives: str = "jepa,scgpt", tag: str = "v1", 
                              "history": r.get("history")}})
             except Exception as e:
                 show({name: {"status": "failed", "error": repr(e)[:2000]}})
+
+    elif stage == "mask-units":
+        # views knob 2a: build the program + pathway units files (CPU; needs the kidney cache)
+        calls = {k: build_mask_units.spawn(k, cache=cache or None) for k in ("program", "pathway")}
+        for k, c in calls.items():
+            try:
+                show({k: c.get()})
+            except Exception as e:
+                show({k: {"status": "failed", "error": repr(e)[:2000]}})
 
     elif stage == "export":
         for o in objs:

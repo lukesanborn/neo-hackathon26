@@ -220,11 +220,20 @@ def forward_losses(objective: str, student: nn.Module, teacher: nn.Module | None
     if objective == "jepa":
         # Teacher sees the unmasked sequence: plain key padding is the same rule there (tested)
         # and avoids a second (B*nhead, L, L) mask. Pad query rows still see real keys -> no NaN.
+        # Perturbation-pair views (src/track_a/perturb_pairs.py): the teacher instead encodes k OTHER
+        # cells with the same knockdown (batch keys t_*, B*k rows) and the target is their mean <cls>.
+        paired = "t_gene_ids" in batch
+        t_gids, t_vals, t_pad = ((batch["t_gene_ids"], batch["t_values"], batch["t_pad"]) if paired
+                                 else (gids, vals, pad))
         with torch.no_grad(), torch.autocast(**amp):
-            xt = teacher.encoder(gids) + teacher.value_encoder(vals)
-            Ht = teacher.transformer_encoder(xt, src_key_padding_mask=pad)
+            xt = teacher.encoder(t_gids) + teacher.value_encoder(t_vals)
+            Ht = teacher.transformer_encoder(xt, src_key_padding_mask=t_pad)
         ht = Ht[:, 0]
+        if paired:
+            B = gids.shape[0]
+            ht = ht.float().view(B, ht.shape[0] // B, ht.shape[-1]).mean(1)
         if variant == "token":
+            assert not paired, "token targets need the student's own masked tokens; not defined for pair views"
             tgt = F.layer_norm(Ht[masked].float(), (Ht.shape[-1],))
             with torch.autocast(**amp):
                 z = predictor(h[masked])
