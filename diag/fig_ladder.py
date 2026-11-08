@@ -1,10 +1,13 @@
 """Figure: the retrieval "ladder" on Replogle validation genes (A25). Each row adds one change to the row above.
 
 Reads diag/results/A25_val_retrieval_ci.json, writes diag/results/figures/A25_ladder.png.
-Run:  uv run --no-project --with matplotlib --with numpy python diag/fig_ladder.py
+Run:  uv run --no-project --with matplotlib --with numpy python diag/fig_ladder.py [--bars]
 """
 import json
 import os
+import sys
+
+BARS = "--bars" in sys.argv   # horizontal bars from 0 (default: dots with CI lines)
 
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -58,8 +61,14 @@ model_jumps = {i: j for i, j in enumerate(jumps) if j is not None and i >= 2}
 big = max(model_jumps, key=lambda i: model_jumps[i])
 for y, (lab, arm, g), (m, lo, hi), j in zip(ys, STEPS, pct, jumps):
     col = GROUPS[g][0]
-    ax.plot([lo, hi], [y, y], color=col, lw=2, solid_capstyle="round", zorder=2)
-    ax.scatter([m], [y], s=90, color=col, edgecolor=SURF, linewidth=2, zorder=3)
+    if BARS:
+        ax.barh(y, m, height=0.62, color=col, edgecolor=SURF, linewidth=2, zorder=2)
+        ax.plot([lo, hi], [y, y], color=INK, lw=1.2, zorder=3)
+        ax.plot([lo, lo], [y - 0.12, y + 0.12], color=INK, lw=1.2, zorder=3)
+        ax.plot([hi, hi], [y - 0.12, y + 0.12], color=INK, lw=1.2, zorder=3)
+    else:
+        ax.plot([lo, hi], [y, y], color=col, lw=2, solid_capstyle="round", zorder=2)
+        ax.scatter([m], [y], s=90, color=col, edgecolor=SURF, linewidth=2, zorder=3)
     ax.text(hi + 0.008, y, f"{m:.3f}", va="center", ha="left", fontsize=10, color=INK)
     if j is not None:
         bold = (ys.index(y) == big)
@@ -69,7 +78,7 @@ ax.axvline(0.5, color=INK2, lw=1, ls=(0, (3, 3)), zorder=1)
 ax.text(0.5, len(STEPS) - 0.35, "chance", ha="center", va="bottom", fontsize=9, color=INK2)
 ax.set_yticks(ys)
 ax.set_yticklabels([s[0] for s in STEPS])
-ax.set_xlim(0.40, 0.95)
+ax.set_xlim((0, 1.0) if BARS else (0.40, 0.95))
 ax.set_ylim(-0.6, len(STEPS) - 0.1)
 ax.set_xlabel("ID percentile (primary metric; 1 = own gene ranked first, 0.5 = chance)")
 ax.grid(axis="x", color=GRID, lw=0.8)
@@ -77,7 +86,7 @@ ax.set_axisbelow(True)
 for sp in ("top", "right", "left"):
     ax.spines[sp].set_visible(False)
 ax.tick_params(axis="y", length=0)
-ax.set_title("A. ID percentile: each row adds one change (95% CI)", loc="left", fontsize=11, color=INK, pad=22)
+ax.set_title("A. ID percentile, one change per row (whisker = 95% CI)" if BARS else "A. ID percentile: each row adds one change (95% CI)", loc="left", fontsize=11, color=INK, pad=22)
 
 # ---- panels B-D: top-1 / top-3 / top-10, same row order ----
 for k, (m, title) in enumerate((("id_top1", "B. Top-1"), ("id_top3", "C. Top-3"), ("id_top10", "D. Top-10"))):
@@ -85,8 +94,12 @@ for k, (m, title) in enumerate((("id_top1", "B. Top-1"), ("id_top3", "C. Top-3")
     for y, (_, arm, g) in zip(ys, STEPS):
         v, lo, hi = ci(arm, m)
         col = GROUPS[g][0]
-        bx.plot([lo, hi], [y, y], color=col, lw=2, solid_capstyle="round", zorder=2)
-        bx.scatter([v], [y], s=60, color=col, edgecolor=SURF, linewidth=2, zorder=3)
+        if BARS:
+            bx.barh(y, v, height=0.62, color=col, edgecolor=SURF, linewidth=2, zorder=2)
+            bx.plot([lo, hi], [y, y], color=INK, lw=1, zorder=3)
+        else:
+            bx.plot([lo, hi], [y, y], color=col, lw=2, solid_capstyle="round", zorder=2)
+            bx.scatter([v], [y], s=60, color=col, edgecolor=SURF, linewidth=2, zorder=3)
         bx.text(min(hi + 0.02, 0.97), y + 0.28, f"{v:.2f}", ha="left", va="center", fontsize=8.5, color=INK2)
     bx.axvline(CHANCE[m], color=INK2, lw=1, ls=(0, (3, 3)))
     bx.set_xlim(0, 1)
@@ -99,14 +112,16 @@ for k, (m, title) in enumerate((("id_top1", "B. Top-1"), ("id_top3", "C. Top-3")
         bx.spines[sp].set_visible(False)
     bx.tick_params(axis="y", length=0, labelleft=False)
 
-handles = [Line2D([0], [0], marker="o", color=c, lw=2, markersize=8, markeredgecolor=SURF, label=l)
-           for c, l in GROUPS.values()]
+from matplotlib.patches import Patch
+handles = ([Patch(facecolor=c, label=l) for c, l in GROUPS.values()] if BARS else
+           [Line2D([0], [0], marker="o", color=c, lw=2, markersize=8, markeredgecolor=SURF, label=l)
+            for c, l in GROUPS.values()])
 fig.legend(handles=handles, loc="upper center", ncol=4, frameon=False, bbox_to_anchor=(0.5, 1.0), fontsize=10)
 fig.text(0.01, 0.005,
          f"Replogle K562 CRISPRi, {N} VALIDATION genes (test genes untouched). Fine-tuned rows: 2 seeds averaged per gene; "
          "the last row averages the 2 seeds' predictions. Gene-vector baseline tunes 1 setting on these genes (slightly optimistic). "
          "Bold jump = largest single step.", fontsize=8.5, color=INK2)
 os.makedirs("diag/results/figures", exist_ok=True)
-out = "diag/results/figures/A25_ladder.png"
+out = "diag/results/figures/A25_ladder" + ("_bars" if BARS else "") + ".png"
 fig.savefig(out, dpi=180, bbox_inches="tight", facecolor=SURF)
 print(out)
