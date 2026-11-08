@@ -40,6 +40,7 @@ from .pretrain_model import (CLS_VALUE, DEVIATIONS, MASK_VALUE, OBJECTIVES, PAD_
                              CLSPredictor, JEPA_VARIANTS, VARIANT_DESCRIPTIONS, build_student, ema_update,
                              forward_losses, make_teacher,
                              random_value_mask)
+from .ijepa import IJEPA_DESCRIPTIONS, IJEPA_VARIANTS, GenePredictor, GenePrograms, forward_losses_ijepa, make_masker
 
 PAPER_N_CELLS = 814_000
 # Cell-JEPA App. E.1: "Training is conducted on the Kidney dataset for a total of 4 epochs" (batch 32):
@@ -85,6 +86,9 @@ class PretrainConfig:
     ema_momentum: float = 0.996     # jepa only
     jepa_variant: str = "faithful"  # jepa only: faithful | center | vicreg | token (see pretrain_model)
     predictor_seed_offset: int = 10_000
+    # ijepa / progmask only (X1 / X2): predictor size
+    pred_d: int = 384
+    pred_layers: int = 4
     # initialisation: None = seeded random init; "scGPT_human" (-> /vol/checkpoints/scGPT_human) or an
     # absolute checkpoint dir (args.json / vocab.json / best_model.pt) = continued pretraining
     init_ckpt: str | None = None
@@ -103,7 +107,7 @@ class PretrainConfig:
         assert self.objective in OBJECTIVES, self.objective
         assert self.jepa_variant in JEPA_VARIANTS, self.jepa_variant
         if self.objective == "jepa" and self.jepa_variant != "faithful":
-            d = VARIANT_DESCRIPTIONS[self.jepa_variant]
+            d = {**VARIANT_DESCRIPTIONS, **IJEPA_DESCRIPTIONS}[self.jepa_variant]
             if d not in self.deviations:
                 self.deviations = list(self.deviations) + [d]
         if self.init_ckpt is not None:
@@ -230,7 +234,7 @@ class KidneyCache:
 
 
 def collate(cache: KidneyCache, cells: np.ndarray, max_genes: int, mask_ratio: float, rng: np.random.Generator,
-            cls_id: int, pad_id: int) -> dict:
+            cls_id: int, pad_id: int, masker=None) -> dict:
     """<cls> + up to ``max_genes`` uniformly sampled nonzero genes per cell, right-padded to the
     batch max. Returns numpy arrays: gene_ids, values (true bins; cls 0, pad -2), masked, pad."""
     seqs = []
@@ -251,8 +255,12 @@ def collate(cache: KidneyCache, cells: np.ndarray, max_genes: int, mask_ratio: f
         gene_ids[b, 1:1 + n] = gi
         values[b, 1:1 + n] = bi
         pad[b, 1:1 + n] = False
-    masked = random_value_mask(ns, L, mask_ratio, rng)
-    return {"gene_ids": gene_ids, "values": values, "masked": masked, "pad": pad, "n_genes": ns}
+    if masker is None:
+        masked = random_value_mask(ns, L, mask_ratio, rng)
+        return {"gene_ids": gene_ids, "values": values, "masked": masked, "pad": pad, "n_genes": ns}
+    masked, mstats = masker(seqs, L, mask_ratio, rng)
+    return {"gene_ids": gene_ids, "values": values, "masked": masked, "pad": pad, "n_genes": ns,
+            "frac_from_programs": np.float32(mstats["frac_from_programs"])}
 
 
 def batch_rng(seed: int, epoch: int, step: int) -> np.random.Generator:
@@ -268,13 +276,13 @@ def val_cells(cache: KidneyCache, cfg: PretrainConfig) -> np.ndarray:
     return np.random.default_rng([cfg.seed, VAL_EPOCH_KEY]).permutation(cache.val)[: cfg.max_val_cells]
 
 
-def iter_batches(cache, cfg, cells, epoch, start_step, cls_id, pad_id, threads: int, prefetch: int):
+def iter_batches(cache, cfg, cells, epoch, start_step, cls_id, pad_id, threads: int, prefetch: int, masker=None):
     """Yields (step, numpy batch) in order, built by a small thread pool with lookahead."""
     steps = math.ceil(len(cells) / cfg.batch_size)
 
     def make(s):
         b = cells[s * cfg.batch_size:(s + 1) * cfg.batch_size]
-        return collate(cache, b, cfg.max_genes, cfg.mask_ratio, batch_rng(cfg.seed, epoch, s), cls_id, pad_id)
+        return collate(cache, b, cfg.max_genes, cfg.mask_ratio, batch_rng(cfg.seed, epoch, s), cls_id, pad_id, masker)
 
     with ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
         futs = {}
@@ -306,7 +314,13 @@ class Pretrainer:
             g = torch.Generator().manual_seed(cfg.seed + cfg.predictor_seed_offset)
             with torch.random.fork_rng(devices=[]):
                 torch.manual_seed(int(torch.randint(0, 2**31 - 1, (1,), generator=g)))
-                self.predictor = CLSPredictor(cfg.d_model).to(device)
+                if cfg.jepa_variant in IJEPA_VARIANTS:
+                    self.predictor = GenePredictor(cfg.d_model, cfg.pred_d, cfg.pred_layers).to(device)
+                else:
+                    self.predictor = CLSPredictor(cfg.d_model).to(device)
+        self.ijepa = cfg.objective == "jepa" and cfg.jepa_variant in IJEPA_VARIANTS
+        self.programs = GenePrograms(vocab) if self.ijepa and cfg.jepa_variant == "progmask" else None
+        self.masker = make_masker(cfg.jepa_variant, self.programs) if self.ijepa else None
         self.params = list(self.model.parameters()) + (list(self.predictor.parameters()) if self.predictor else [])
         self.opt = torch.optim.AdamW(self.params, lr=cfg.lr, weight_decay=cfg.weight_decay)
         self.sched = torch.optim.lr_scheduler.StepLR(self.opt, step_size=1, gamma=cfg.lr_step_gamma)
@@ -314,6 +328,15 @@ class Pretrainer:
                         dtype=torch.bfloat16, enabled=cfg.precision == "bf16")
         self.cls_id, self.pad_id = vocab["<cls>"], vocab["<pad>"]
         self.jepa_state: dict = {}   # e.g. the EMA centre for jepa_variant="center"
+
+    def losses(self, batch: dict, update_state: bool = False) -> dict:
+        if self.ijepa:
+            from .pretrain_model import JEPA_WEIGHT
+            return forward_losses_ijepa(self.model, self.teacher, self.predictor, batch, self.amp, JEPA_WEIGHT,
+                                        state=self.jepa_state, update_state=update_state, n_vocab=len(self.vocab))
+        return forward_losses(self.cfg.objective, self.model, self.teacher, self.predictor, batch,
+                              self.cfg.nhead, self.amp, self.cfg.jepa_variant, self.jepa_state,
+                              update_state=update_state)
 
     def to_device(self, nb: dict) -> dict:
         return {k: torch.from_numpy(nb[k]).to(self.device, non_blocking=True)
@@ -328,8 +351,9 @@ class Pretrainer:
         self.model.train()
         if self.predictor is not None:
             self.predictor.train()
-        out = forward_losses(self.cfg.objective, self.model, self.teacher, self.predictor, self.to_device(nb),
-                             self.cfg.nhead, self.amp, self.cfg.jepa_variant, self.jepa_state, update_state=True)
+        out = self.losses(self.to_device(nb), update_state=True)
+        if "frac_from_programs" in nb:
+            out["frac_from_programs"] = torch.tensor(float(nb["frac_from_programs"]), device=out["loss"].device)
         self.opt.zero_grad(set_to_none=True)
         out["loss"].backward()
         gn = torch.nn.utils.clip_grad_norm_(self.params, self.cfg.grad_clip)
@@ -349,21 +373,22 @@ class Pretrainer:
         bs = self.cfg.batch_size
         for i in range(0, len(cells), bs):
             nb = collate(cache, cells[i:i + bs], self.cfg.max_genes, self.cfg.mask_ratio,
-                         batch_rng(self.cfg.seed, VAL_EPOCH_KEY, i // bs), self.cls_id, self.pad_id)
-            out = forward_losses(self.cfg.objective, self.model, self.teacher, self.predictor, self.to_device(nb),
-                                 self.cfg.nhead, self.amp, self.cfg.jepa_variant, self.jepa_state)
+                         batch_rng(self.cfg.seed, VAL_EPOCH_KEY, i // bs), self.cls_id, self.pad_id, self.masker)
+            out = self.losses(self.to_device(nb))
             # recon: token-weighted (exact mean over all masked tokens); jepa: cell-weighted
             w_tok, w_cell = float(nb["masked"].sum()), len(nb["gene_ids"])
             sums["recon"] = sums.get("recon", 0.0) + float(out["recon"]) * w_tok
             n_tok += w_tok
-            for k in ("jepa", "teacher_cls_std", "target_spread", "teacher_tok_std", "var_loss"):
+            for k in ("jepa", "teacher_cls_std", "target_spread", "teacher_tok_std", "var_loss", "jepa_const_ref",
+                      "jepa_const_ref_raw"):
                 if k in out:
                     sums[k] = sums.get(k, 0.0) + float(out[k]) * w_cell
             n_cell += w_cell
         res = {"val_recon": sums["recon"] / max(n_tok, 1.0)}
         if "jepa" in sums:
             res["val_jepa"] = sums["jepa"] / max(n_cell, 1)
-            for k in ("teacher_cls_std", "target_spread", "teacher_tok_std", "var_loss"):
+            for k in ("teacher_cls_std", "target_spread", "teacher_tok_std", "var_loss", "jepa_const_ref",
+                      "jepa_const_ref_raw"):
                 if k in sums:
                     res[f"val_{k}"] = sums[k] / max(n_cell, 1)
             res["val_loss"] = 1000.0 * res["val_jepa"] + res["val_recon"]
@@ -461,7 +486,7 @@ def run_pretraining(cfg: PretrainConfig, cache_dir: str, vocab_path: str, run_di
         log("resumed", epoch=epoch, step=step0, global_step=global_step, best_val_recon=best)
         del ck
 
-    meta = {**asdict(cfg), "init_state_hash": tr.init_hash, "init_ckpt_info": tr.init_info, "n_cells": cache.n_cells, "n_train": len(cache.train),
+    meta = {**asdict(cfg), "programs": tr.programs.info() if tr.programs else None, "init_state_hash": tr.init_hash, "init_ckpt_info": tr.init_info, "n_cells": cache.n_cells, "n_train": len(cache.train),
             "n_val": len(cache.val), "n_val_used": len(vcells), "nnz": cache.nnz_stats(),
             "cache_dir": cache_dir, "cache_manifest": cache.manifest, "environment": env_info(),
             "steps_per_epoch": math.ceil(len(epoch_cells(cache, cfg, 0)) / cfg.batch_size)}
@@ -499,7 +524,7 @@ def run_pretraining(cfg: PretrainConfig, cache_dir: str, vocab_path: str, run_di
         t_ep = time.time()
         acc, n_acc, stopped_at = None, 0, None
         for s, nb in iter_batches(cache, cfg, cells, epoch, step0, tr.cls_id, tr.pad_id,
-                                  cfg.loader_threads, cfg.prefetch):
+                                  cfg.loader_threads, cfg.prefetch, tr.masker):
             if time.time() - t_start > budget_s - reserve_s:
                 stopped_at = s
                 break
@@ -636,7 +661,7 @@ def run_pilot(cache_dir: str, vocab_path: str, out_path: str, objectives=OBJECTI
                 losses, Ls = [], []
                 t0 = None
                 for s, nb in iter_batches(cache, cfg, cells[: need * bs], 0, 0, tr.cls_id, tr.pad_id,
-                                          cfg.loader_threads, cfg.prefetch):
+                                          cfg.loader_threads, cfg.prefetch, tr.masker):
                     if s == warmup:
                         torch.cuda.synchronize()
                         t0 = time.time()

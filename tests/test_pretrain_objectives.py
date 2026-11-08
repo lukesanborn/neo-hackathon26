@@ -503,7 +503,7 @@ def test_jepa_variants_run_and_center_state(tmp_path=None):
     torch = pytest.importorskip("torch")
     from src.track_a.pretrain_model import JEPA_VARIANTS, variance_hinge
 
-    assert set(JEPA_VARIANTS) == {"faithful", "center", "vicreg", "token"}
+    assert set(JEPA_VARIANTS) == {"faithful", "center", "vicreg", "token", "ijepa", "progmask"}
     # variance hinge: constant embeddings -> ~gamma; well-spread -> ~0
     assert float(variance_hinge(torch.zeros(16, 8))) > 0.9
     assert float(variance_hinge(torch.randn(256, 8) * 5)) < 0.05

@@ -99,3 +99,18 @@ def test_json_safe():
     out = RT.json_safe({"a": np.float64("nan"), "b": [np.int64(3), np.array([1.0, np.inf])], "c": "x"})
     assert out == {"a": None, "b": [3, [1.0, None]], "c": "x"}
     json.dumps(out, allow_nan=False)
+
+
+def test_inverse_id_metrics():
+    from src import retrieval as RT
+
+    rng = np.random.default_rng(0)
+    T = rng.normal(size=(6, 30))
+    R = rng.normal(size=(10, 30))
+    pg, _ = RT.per_gene_scores(T + 0.01 * rng.normal(size=T.shape), T, R)
+    assert pg["inv_hit1"].mean() == 1.0 and pg["cinv_rr"].mean() == 1.0
+    const = np.tile(R.mean(0), (6, 1))       # training-mean prediction: centred -> all ties -> chance rank
+    pg2, _ = RT.per_gene_scores(const, T, R)
+    chance_rr = np.mean([1 / k for k in range(1, 7)])
+    assert np.allclose(pg2["cinv_rr"], chance_rr) and np.allclose(pg2["cinv_hit1"], 1 / 6)
+    assert np.allclose(pg2["cinv_hit5"], 5 / 6)

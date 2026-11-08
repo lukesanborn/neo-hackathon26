@@ -455,6 +455,59 @@ Merged from the Unit 3 branch. `/vol/trackA/blood_marrow_census_2023-05-15_2M`, 
 - **Leakage check for the PBMC-10K evaluation data** (10x pbmc4k/pbmc8k): no matching dataset by title/collection, nothing excluded. 17 broader PBMC/10x datasets were reviewed and kept (listed in the manifest). Limitation: this is a text-based screen only.
 - **Build:** ~6 min (8 parallel shard containers). Kidney corpus defaults are unchanged and pinned by a test.
 
+## X1 / X2. Gene-token JEPA: I-JEPA predictor (X1 `ijepa`) and gene-program masking (X2 `progmask`) (Nov 7, Mona)
+
+**Goal (product):** given an observed knockdown response, point at the gene whose knockdown caused it (CRISPR target triage). Both changes move the JEPA objective from the cell `<cls>` vector onto **per-gene representations**, which is what the perturbation model reads when it marks the knocked-down gene.
+
+Code: `src/track_a/ijepa.py` (+ hooks in `pretrain.py`), app `modal_xjepa.py` (own app `jepa-xexp`; fine-tunes use the deployed `jepa-perturb.train_blackwell`), launcher `diag/launch_xjepa.py`, waiter `diag/wait_xjepa.py`, eval `src/xjepa_eval.py`, report `diag/xjepa_report.py`. Tests: `tests/test_ijepa.py`.
+
+- **X1 `ijepa`:** masked genes are **removed** from the student (no key, no value), fixing the `token` variant's identity leak. A 4-layer, width-384 pre-norm transformer predictor takes [student context outputs ; one query per masked gene = student gene-ID embedding + learned mask token]. It predicts the layer-normed EMA-teacher token embedding of each masked gene (cosine, weight 1000). The value is reconstructed from the same query output (MSE, weight 1). The predictive gradient reaches the gene-ID embedding table through the queries (unit-tested).
+- **X2 `progmask`:** same model and loss. Masks **whole MSigDB Hallmark programs** (v2023.2, 50 sets, embedded in `src/track_a/hallmark_sets.py`) until the masked fraction is reached; any remainder is filled randomly. 98.7% of masked genes come from whole programs.
+- **Per-gene target centring (deviation, added after the smoke):** the first 200-step smoke showed nearly identical token targets. A constant guess scored a cosine loss of 0.0011, below the JEPA loss of 0.0022: the A19 collapse pattern, and identity being predictable from the query alone. Targets are now `LN(teacher token) − per-gene EMA (m=0.9)`, so the predictor must predict *this cell's* deviation for the gene. 2,500-step smoke: centred JEPA loss 0.067 (X1) / 0.009 (X2) vs constant-guess 0.77 / 0.75; raw target spread grew 0.0004 → 0.50–0.60; val recon 25.2 / 24.4 (escaped the ~35 plateau).
+- **Schedule:** A9 (4 epochs kidney, bs 32, lr 3e-5, seed 0, clip 1, bf16, B300) except **mask ratio 0.25** for both X arms (I-JEPA uses larger target fractions; X1 vs X2 stays matched). 0.053 s/step, ~90 min.
+- **Downstream (same as A14):** Adamson `adamson_trackA_lr3e5` × {scgpt_paper, celljepa} × seeds {1, 2}; **Replogle K562 essential** new experiment `replogle_trackA_lr3e5` (split hash d4237826c68c, 279/31/103; prepare reproduced A20 baselines: linear 0.0755) × scgpt_paper × seeds {1, 2}, for X1, X2 and baseline checkpoints scgpt_lr3e5, jepa_lr3e5 (faithful), jepa_lr3e5_token.
+
+**Evaluation (declared before results).** Deltas and 500-gene panel as A16. New **inverse identification**: for each observed held-out response T_j, rank all held-out genes' *predicted* responses by cosine; report top-1 / top-5 / MRR. Ties are broken at random in expectation, so constant predictions score exactly chance. `cinv_*` = the same after subtracting the mean training-knockdown delta from both sides, which removes the generic response every knockdown shares.
+- **Primary:** Replogle `cinv_mrr`, X arm (scgpt_paper FT) minus kidney scGPT and minus kidney JEPA-faithful (same recipe), paired bootstrap over the 103 genes, 95% CI.
+- **Secondary:** the same on Adamson (22 genes); `inv_*`, `id_top1`, `ref_spearman`; X2 − X1.
+- **Gene-embedding linear probe** (no fine-tune): Ahlmann-Eltze linear model with P = the pretrained gene-ID embedding of the target gene (PCA to K=10 fitted on training targets).
+- **Program readout probe** (the gene-program table's test): embed 2,048 held-out kidney cells with each Hallmark program's genes **removed**, then ridge-probe that program's activity, residualised on log #genes and mean bin (5-fold CV R²). Arms: every checkpoint + PCA-50 of the remaining genes' bins.
+
+### Results (full tables: `diag/results/X_report.md`; raw: `diag/results/X_*_retrieval.json`, `X_program_probe.json`)
+
+Pretraining: both completed, 100,768 steps, ~85 min, 5.7–5.9 GB. Best val recon **X1 17.12** (best JEPA so far; A9 faithful 17.73, token 18.40), X2 18.10 (plain scGPT 15.68). No collapse: centred JEPA loss 0.03–0.08 vs constant-guess ~0.82 throughout; target spread flat at 0.042–0.043. Late grad-norm spikes (9k / 66k, clipped) with finite losses.
+
+**Primary: Replogle, 103 held-out knockdowns, `cinv_mrr` (chance 0.051), scgpt_paper FT, 3 seeds:**
+
+| Arm | cinv_mrr | cinv_top1 | cinv_top5 | ref_spearman |
+|---|---|---|---|---|
+| **X1 `ijepa`** | **0.186** [0.13, 0.25] | **0.133** | **0.207** | 0.525 |
+| kidney scGPT | 0.172 [0.11, 0.23] | 0.126 | 0.175 | 0.476 |
+| kidney JEPA `token` | 0.166 | 0.113 | 0.188 | 0.431 |
+| X2 `progmask` | 0.154 | 0.097 | 0.184 | 0.504 |
+| kidney JEPA `faithful` (paper) | 0.143 | 0.091 | 0.149 | 0.342 |
+| linear | 0.100 | 0.049 | 0.097 | 0.548 |
+| training mean / no change | 0.051 (chance) | 0.010 | 0.049 | |
+
+- **X1 vs kidney scGPT: +0.014 [−0.01, 0.04] (86% of resamples > 0). Not resolved: the declared primary does not pass against scGPT.**
+- X1 vs paper JEPA `faithful`: **+0.043 [0.02, 0.07] (100%)**, top-1 +0.042 [0.01, 0.08]. ref_spearman +0.18. The gene-token objective clearly beats the paper's `<cls>` JEPA.
+- X1 vs `token` (the leaky predecessor): +0.020 [−0.01, 0.05] (94%); inv_mrr +0.029 [0.00, 0.06].
+- X1 vs linear: +0.087 [0.02, 0.15]. **Every fine-tuned deep arm beats linear at identification on Replogle**: the A16 trend, now with CIs excluding 0 at n = 103. Linear still wins ref_spearman (0.548) and delta RMSE (deep 0.081–0.083 vs linear 0.0755).
+- X2 vs X1: **−0.032 [−0.06, 0.00] (3%)**. Program masking is *worse* than random gene masking for identification.
+- In product terms: given an observed knockdown response, X1 ranks the true gene first among 103 candidates 13% of the time (13× chance) and in the top 5 21% of the time.
+
+**Adamson (22 genes, 2 seeds): unresolved for everything** (CIs ±0.1–0.2). Linear has the highest cinv_mrr (0.290); X2-scgpt_paper 0.280 rests on one seed. **X2 scgpt_paper seed 1 is degenerate** (delta RMSE 0.1411, ref_spearman ≈ 0; the A4 constant-output failure, open question 3). X1 is ahead of matched kidney arms by +0.01–0.05 (61–96% of resamples).
+
+**Gene-embedding linear probe: negative.** With P = the pretrained gene-ID embedding, every kidney checkpoint (X1/X2 included) is at or near chance (Replogle cinv_mrr 0.046–0.069) and below PCA-linear (0.100). X1/X2 gene embeddings are not better than scGPT's or JEPA-faithful's. The identification gain therefore comes through fine-tuning the full encoder, not from the gene table being knockdown-aware out of the box. public scGPT_human's table is best (0.092).
+
+**Program readout probe: negative, and in the wrong direction for X2.** Depth-residualised CV R²: plain scGPT 0.662 > JEPA faithful 0.500 > center 0.487 ≈ PCA 0.486 > token 0.428 > **X1 0.382 > X2 0.212**. Masking whole programs made program state *less* readable from the encoder's pooled cell embedding. Likely reason: in X1/X2 the "infer missing genes from context" skill is trained into the **predictor**, which is discarded, while the encoder only has to provide context features. The probe (mean-pooled encoder output) does not see the predictor. The screenshot's "search by program state" therefore needs to read program state through the predictor (query a program's genes → predicted states), which was not tested here.
+
+**Conclusions.**
+1. X1 is the best checkpoint we have for the target use case. It is reliably better than the paper's Cell-JEPA objective at pointing to the causal knockdown, but not yet distinguishable from plain kidney scGPT (+8% MRR, CI includes 0).
+2. X2 (gene-program masking) does not help identification and hurts encoder-level program readout. Do not carry it forward as-is.
+3. Gene-ID embeddings alone are not knockdown-informative for any kidney model.
+4. Next: (a) more Replogle seeds, or a wider candidate set, to resolve X1 vs scGPT; (b) X1 objective as continued pretraining from public scGPT (the strongest base in A16); (c) program probe through the predictor before judging X2's "explanations" use.
+
 ## Literature context (for the write-up)
 
 - **Released scGPT shows our "stuck" behaviour.** Without its cell embedding, it "predicts the median expression value for every single gene regardless of its true expression value" (Kedzierska et al., *Genome Biology* 2025, doi:10.1186/s13059-025-03574-x; MSR summary). We have read only the summary and figure captions, not the full paper.

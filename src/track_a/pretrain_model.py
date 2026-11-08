@@ -164,7 +164,7 @@ def masked_mse(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> 
 #   vicreg : faithful target + VICReg variance hinge on the student <cls> (per-dim batch std ≥ 1).
 #   token  : I-JEPA-style — predict layer-normed teacher embeddings of the MASKED gene tokens
 #            (per-token targets) instead of the <cls> embedding.
-JEPA_VARIANTS = ("faithful", "center", "vicreg", "token")
+JEPA_VARIANTS = ("faithful", "center", "vicreg", "token", "ijepa", "progmask")
 CENTER_MOMENTUM = 0.9
 VAR_WEIGHT = 1.0
 VARIANT_DESCRIPTIONS = {
