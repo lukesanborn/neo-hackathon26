@@ -1,0 +1,32 @@
+[
+  {
+    "file": "replogle_RPL10_8cell.csv",
+    "label": "Noisy K562 pool (8 cells)",
+    "true_gene": "RPL10",
+    "split": "test"
+  },
+  {
+    "file": "replogle_RPL10_single_cell.csv",
+    "label": "Very noisy single cell",
+    "true_gene": "RPL10",
+    "split": "test"
+  },
+  {
+    "file": "replogle_RPL26_8cell.csv",
+    "label": "Noisy K562 pool (8 cells)",
+    "true_gene": "RPL26",
+    "split": "test"
+  },
+  {
+    "file": "replogle_RPL26_single_cell.csv",
+    "label": "Very noisy single cell",
+    "true_gene": "RPL26",
+    "split": "test"
+  },
+  {
+    "file": "replogle_control_single_cell.csv",
+    "label": "K562 control cell",
+    "true_gene": null,
+    "split": "control"
+  }
+]

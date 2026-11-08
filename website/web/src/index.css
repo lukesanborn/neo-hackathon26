@@ -1,0 +1,115 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: Futura, "Futura PT", "Century Gothic", Jost, "Segoe UI", system-ui,
+    sans-serif;
+  --color-icy: #bce7fd;
+  --color-lilac: #c492b1;
+  --color-berry: #af3b6e;
+  --color-charcoal: #424651;
+  --color-spring: #21fa90;
+  --color-panel: #f7fbfe;
+  --color-border: #d7e3ec;
+  --color-muted: #6b7380;
+  --color-up: #0f9f5c;
+  --color-up-fill: #21fa90;
+  --color-down: #af3b6e;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+    min-height: 100dvh;
+    max-width: 100%;
+    margin: 0;
+    overflow-x: clip;
+  }
+
+  body {
+    @apply bg-white font-sans text-[15px] leading-snug text-charcoal antialiased;
+    background-image:
+      radial-gradient(900px 420px at 0% 0%, rgb(188 231 253 / 0.45), transparent 60%),
+      radial-gradient(700px 380px at 100% 0%, rgb(196 146 177 / 0.18), transparent 55%);
+  }
+
+  button:not(:disabled),
+  label.file,
+  select {
+    @apply cursor-pointer;
+  }
+
+  button:disabled {
+    @apply cursor-not-allowed opacity-45;
+  }
+}
+
+/* Dynamic bar fill positions need a tiny bit of custom CSS */
+.track {
+  @apply relative h-3.5 overflow-hidden rounded bg-[#eef3f7];
+}
+.track::before {
+  content: "";
+  @apply absolute top-0 bottom-0 left-1/2 w-px -translate-x-1/2 bg-charcoal/30;
+}
+.track-fill {
+  @apply absolute top-0.5 bottom-0.5 rounded-sm;
+}
+.track-fill-up {
+  background: linear-gradient(90deg, #7dffc0, var(--color-up-fill));
+}
+.track-fill-down {
+  background: linear-gradient(270deg, var(--color-lilac), var(--color-down));
+}
+
+/* Logo orbit loader */
+.orbit {
+  @apply relative h-[120px] w-[120px];
+}
+.orbit-logo {
+  @apply absolute top-1/2 left-1/2 z-[1] h-11 w-11 -translate-x-1/2 -translate-y-1/2 rounded-[10px] bg-neutral-900 object-contain p-1;
+}
+.orbit-ring {
+  @apply absolute inset-1 animate-[spin_1.4s_linear_infinite] rounded-full border-[10px] border-lilac border-r-transparent border-b-transparent;
+  transform: rotate(-20deg);
+}
+.orbit-dot {
+  @apply absolute top-1/2 left-1/2 h-3 w-3 -m-1.5 rounded-full bg-[#7ec8ea];
+  transform-origin: 0 0;
+  animation: orbit-spin 1.4s linear infinite;
+}
+.orbit-dot-2 {
+  @apply h-2.5 w-2.5 -m-[5px];
+  animation-delay: -0.18s;
+}
+.orbit-dot-3 {
+  @apply h-2 w-2 -m-1 bg-spring;
+  animation-delay: -0.36s;
+}
+.orbit-dot-4 {
+  @apply h-1.5 w-1.5 -m-[3.5px];
+  animation-delay: -0.54s;
+}
+@keyframes orbit-spin {
+  from {
+    transform: rotate(20deg) translateX(48px) rotate(0deg);
+  }
+  to {
+    transform: rotate(380deg) translateX(48px) rotate(-360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .orbit-ring,
+  .orbit-dot {
+    animation: none;
+  }
+}
+
+/* Mol* mount */
+.structure-view {
+  @apply relative min-h-[260px] flex-1 overflow-hidden rounded-lg border border-border bg-[#111318];
+}
+.structure-view canvas {
+  @apply h-full w-full;
+}

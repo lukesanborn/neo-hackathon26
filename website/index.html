@@ -1,0 +1,1272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>blood JEPA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/molstar@5.12.0/build/viewer/molstar.css" crossorigin="anonymous">
+<script src="https://cdn.jsdelivr.net/npm/molstar@5.12.0/build/viewer/molstar.js" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --icy-blue: #bce7fd;
+    --lilac: #c492b1;
+    --berry-crush: #af3b6e;
+    --charcoal-blue: #424651;
+    --spring-green: #21fa90;
+
+    --bg: #ffffff;
+    --panel: #ffffff;
+    --panel-2: #f7fbfe;
+    --border: #d7e3ec;
+    --text: #424651;
+    --muted: #6b7380;
+    --up: #0f9f5c;
+    --up-fill: #21fa90;
+    --down: #af3b6e;
+    --down-fill: #c492b1;
+    --accent: var(--berry-crush);
+    --accent-soft: var(--icy-blue);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+  }
+  body {
+    color: var(--text);
+    font: 13px/1.35 "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+    background:
+      radial-gradient(900px 420px at 0% 0%, rgba(188, 231, 253, 0.45), transparent 60%),
+      radial-gradient(700px 380px at 100% 0%, rgba(196, 146, 177, 0.18), transparent 55%),
+      #ffffff;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+    background: #fff;
+    min-height: 52px;
+  }
+  header img.logo {
+    width: 34px;
+    height: 34px;
+    object-fit: contain;
+    background: #111;
+    border-radius: 8px;
+    padding: 3px;
+    flex: 0 0 auto;
+  }
+  header h1 {
+    margin: 0;
+    font-family: Outfit, "Source Sans 3", sans-serif;
+    font-size: 18px;
+    letter-spacing: 0.02em;
+    font-weight: 700;
+    color: var(--charcoal-blue);
+    white-space: nowrap;
+  }
+  .toolbar {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    min-width: 0;
+    flex: 1 1 auto;
+    justify-content: flex-end;
+  }
+  .drop {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px dashed #9fc7db;
+    border-radius: 8px;
+    padding: 6px 10px;
+    color: var(--muted);
+    background: rgba(188, 231, 253, 0.28);
+    white-space: nowrap;
+    font-size: 12px;
+  }
+  .drop.over { border-color: var(--spring-green); background: rgba(33, 250, 144, 0.16); color: var(--text); }
+  .layout {
+    min-height: 0;
+    height: 100%;
+    padding: 10px 12px;
+    display: grid;
+    grid-template-columns: 180px minmax(0, 1fr);
+    gap: 10px;
+  }
+  .sidebar {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 8px;
+  }
+  .sidebar h2, .pane-label, .cand-pick h3, .card h2 {
+    margin: 0 4px 8px;
+    font-family: Outfit, "Source Sans 3", sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 700;
+  }
+  .recent-list {
+    display: grid;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    overflow: auto;
+    min-height: 0;
+    flex: 1;
+  }
+  .recent-item {
+    width: 100%;
+    text-align: left;
+    border: 1px solid transparent;
+    background: #f7fbfe;
+    border-radius: 8px;
+    padding: 7px 8px;
+    cursor: pointer;
+    color: var(--text);
+    font: inherit;
+  }
+  .recent-item:hover { border-color: #c5e4f5; background: #eef8fd; }
+  .recent-item.active {
+    border-color: var(--berry-crush);
+    background: rgba(175, 59, 110, 0.06);
+  }
+  .recent-item .r-title {
+    display: block;
+    font-weight: 700;
+    font-size: 12px;
+    color: var(--charcoal-blue);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .recent-item .r-meta {
+    display: block;
+    margin-top: 1px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .recent-item .r-hit {
+    display: block;
+    margin-top: 2px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--berry-crush);
+  }
+  .recent-empty {
+    margin: 0;
+    padding: 8px 4px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .sidebar-foot {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  .sidebar-foot button { width: 100%; font-size: 11px; padding: 6px 8px; }
+  .workspace {
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    gap: 8px;
+  }
+  #uploadMeta {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 12px;
+    min-height: 0;
+  }
+  .card.stage {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    overflow: hidden;
+  }
+  .sub { color: var(--muted); font-size: 12px; margin: 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button, select, label.file {
+    font: inherit;
+    color: var(--text);
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  button.primary {
+    background: var(--berry-crush);
+    border-color: var(--berry-crush);
+    color: #fff;
+    font-weight: 600;
+  }
+  button.primary:hover { background: #c44a7f; border-color: #c44a7f; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  label.file input { display: none; }
+
+  .loader-wrap {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    height: 100%;
+  }
+  .loader-wrap.on { display: flex; }
+  .orbit {
+    position: relative;
+    width: 88px;
+    height: 88px;
+  }
+  .orbit .core {
+    position: absolute;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--berry-crush);
+    left: 20px;
+    top: 30px;
+  }
+  .orbit .ring {
+    position: absolute;
+    inset: 6px;
+    border-radius: 50%;
+    border: 8px solid var(--lilac);
+    border-right-color: transparent;
+    border-bottom-color: transparent;
+    transform: rotate(-20deg);
+    animation: spin 1.4s linear infinite;
+  }
+  .orbit .dot {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #7ec8ea;
+    top: 50%;
+    left: 50%;
+    margin: -5px;
+    transform-origin: 0 0;
+    animation: orbit 1.4s linear infinite;
+  }
+  .orbit .dot.d2 { width: 8px; height: 8px; margin: -4px; animation-delay: -0.18s; }
+  .orbit .dot.d3 { width: 7px; height: 7px; margin: -3.5px; background: var(--spring-green); animation-delay: -0.36s; }
+  .orbit .dot.d4 { width: 6px; height: 6px; margin: -3px; animation-delay: -0.54s; }
+  @keyframes spin { to { transform: rotate(340deg); } }
+  @keyframes orbit {
+    from { transform: rotate(20deg) translateX(34px) rotate(0deg); }
+    to { transform: rotate(380deg) translateX(34px) rotate(-360deg); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .orbit .ring, .orbit .dot { animation: none; }
+  }
+  .status { color: var(--charcoal-blue); font-size: 13px; font-weight: 600; }
+
+  .abn-panel {
+    display: none;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  .abn-panel.on { display: block; }
+  .abn-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .abn-head h3 {
+    margin: 0;
+    font-family: Outfit, "Source Sans 3", sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 700;
+  }
+  .abn-legend {
+    display: flex;
+    gap: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .abn-legend span::before {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    margin-right: 4px;
+  }
+  .abn-legend .up::before { background: var(--up-fill); }
+  .abn-legend .down::before { background: var(--down); }
+  .bars {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 12px;
+  }
+  .track {
+    position: relative;
+    height: 8px;
+    background: #eef3f7;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .track::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--charcoal-blue);
+    opacity: 0.3;
+    transform: translateX(-50%);
+  }
+  .track .fill {
+    position: absolute;
+    top: 1px;
+    bottom: 1px;
+    border-radius: 3px;
+  }
+  .track .fill.up { background: linear-gradient(90deg, #7dffc0, var(--up-fill)); }
+  .track .fill.down { background: linear-gradient(270deg, var(--lilac), var(--down)); }
+
+  #resultsBlock {
+    min-height: 0;
+    height: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 168px;
+    gap: 10px;
+  }
+  #resultsBlock.hidden { display: none !important; }
+  .compare {
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 8px;
+  }
+  .compare-top {
+    display: grid;
+    grid-template-columns: minmax(220px, 0.95fr) minmax(220px, 1.05fr);
+    gap: 8px;
+    align-items: stretch;
+  }
+  .compare-pane {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    min-width: 0;
+    min-height: 0;
+  }
+  .compare-pane.candidate {
+    border-color: var(--berry-crush);
+    box-shadow: 0 0 0 1px rgba(175, 59, 110, 0.18);
+  }
+  .compare-pane.struct {
+    display: flex;
+    flex-direction: column;
+  }
+  .dual-head {
+    display: grid;
+    grid-template-columns: 56px 1fr 1fr;
+    gap: 8px;
+    align-items: end;
+    margin-bottom: 4px;
+  }
+  .dual-head span {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .dual-head .h-left { text-align: center; }
+  .dual-head .h-right { text-align: center; color: var(--berry-crush); }
+  .dual-row {
+    display: grid;
+    grid-template-columns: 56px 1fr 1fr;
+    gap: 8px;
+    align-items: center;
+    font-size: 11px;
+    padding: 1px 0;
+  }
+  .dual-row .name, .align-row .name {
+    color: var(--charcoal-blue);
+    font-weight: 600;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .dual-cell {
+    display: grid;
+    grid-template-columns: 1fr 36px;
+    gap: 4px;
+    align-items: center;
+  }
+  .dual-cell .val, .align-row .val {
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    font-size: 10px;
+  }
+  .dual-cell .val.up, .align-row .val.up { color: var(--up); }
+  .dual-cell .val.down, .align-row .val.down { color: var(--down); }
+  .compare .gene {
+    font-family: Outfit, "Source Sans 3", sans-serif;
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0 0 2px;
+    color: var(--berry-crush);
+  }
+  .compare .protein-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--charcoal-blue);
+    margin: 0 0 4px;
+  }
+  .compare .meta { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+  .compare .blurb {
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.3;
+    margin: 0 0 6px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .compare .facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 0 0 6px;
+  }
+  .compare .fact {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--charcoal-blue);
+    background: rgba(188, 231, 253, 0.45);
+    border: 1px solid #c5e4f5;
+    border-radius: 999px;
+    padding: 2px 6px;
+  }
+  .gene-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 6px;
+    font-size: 11px;
+  }
+  .gene-links a {
+    color: var(--berry-crush);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .gene-links a:hover { text-decoration: underline; }
+  .structure-panel {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+  }
+  .structure-panel.on { display: flex; }
+  .structure-view {
+    position: relative;
+    flex: 1;
+    min-height: 120px;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #111318;
+    border: 1px solid var(--border);
+  }
+  .structure-caption {
+    font-size: 11px;
+    color: var(--muted);
+    min-height: 1.2em;
+    margin-bottom: 4px;
+  }
+  .weight {
+    height: 6px;
+    background: #e8eef3;
+    border-radius: 999px;
+    overflow: hidden;
+    margin-bottom: 0;
+  }
+  .weight > span {
+    display: block;
+    height: 100%;
+    background: var(--berry-crush);
+    border-radius: 999px;
+  }
+  .align-bars { display: grid; gap: 2px; }
+  .align-row {
+    display: grid;
+    grid-template-columns: 48px 1fr 36px;
+    gap: 4px;
+    align-items: center;
+    font-size: 10px;
+  }
+  .cand-pick {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px;
+  }
+  .cand-pick h3 { margin: 0 0 6px; }
+  .cand-top, .cand-list {
+    display: grid;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .cand-list {
+    margin-top: 6px;
+    overflow: auto;
+    min-height: 0;
+    flex: 1;
+  }
+  .cand-card, .cand-row {
+    width: 100%;
+    text-align: left;
+    border: 1px solid transparent;
+    background: #fff;
+    border-radius: 8px;
+    padding: 7px 8px;
+    cursor: pointer;
+    color: var(--text);
+    font: inherit;
+  }
+  .cand-card:hover, .cand-row:hover { border-color: #c5e4f5; background: #eef8fd; }
+  .cand-card.active, .cand-row.active {
+    border-color: var(--berry-crush);
+    background: rgba(175, 59, 110, 0.06);
+  }
+  .cand-card .c-gene, .cand-row .c-gene {
+    display: block;
+    font-weight: 700;
+    font-size: 12px;
+    color: var(--charcoal-blue);
+  }
+  .cand-card.active .c-gene, .cand-row.active .c-gene { color: var(--berry-crush); }
+  .cand-card .c-meta, .cand-row .c-meta {
+    display: block;
+    margin-top: 1px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .cand-row {
+    display: grid;
+    grid-template-columns: 22px 1fr;
+    gap: 4px;
+    align-items: start;
+  }
+  .cand-row .rank {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--muted);
+    padding-top: 1px;
+  }
+  .err {
+    display: none;
+    color: #7a2148;
+    background: rgba(175, 59, 110, 0.1);
+    border: 1px solid var(--berry-crush);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+  .err.on { display: block; }
+  .hidden { display: none !important; }
+  .idle-hint {
+    height: 100%;
+    display: grid;
+    place-items: center;
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+    padding: 24px;
+  }
+  #resultsBlock.hidden ~ .idle-hint { display: grid; }
+  .stage.has-results .idle-hint { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <img class="logo" src="/static/logo.png" alt="blood JEPA logo">
+  <h1>blood JEPA</h1>
+  <div class="toolbar">
+    <div class="drop" id="drop">
+      Drop CSV or
+      <label class="file">choose file<input type="file" id="file" accept=".csv,text/csv"></label>
+    </div>
+    <button class="primary" id="run" disabled>Find similar</button>
+    <span class="sub" id="uploadMeta"></span>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar" aria-label="Recent uploads">
+    <h2>Recent</h2>
+    <ul class="recent-list" id="recentList"></ul>
+    <p class="recent-empty" id="recentEmpty">No uploads yet.</p>
+    <div class="sidebar-foot">
+      <button type="button" id="clearRecent">Clear</button>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <div class="err" id="err"></div>
+    <div class="abn-panel" id="abnPanel">
+      <div class="abn-head">
+        <h3>Cell abnormalities</h3>
+        <div class="abn-legend">
+          <span class="up">Higher</span>
+          <span class="down">Lower</span>
+        </div>
+      </div>
+      <div class="bars" id="abn"></div>
+    </div>
+
+    <section class="card stage" id="stage">
+      <div class="loader-wrap" id="loader">
+        <div class="orbit" aria-hidden="true">
+          <div class="ring"></div>
+          <div class="core"></div>
+          <div class="dot d1"></div>
+          <div class="dot d2"></div>
+          <div class="dot d3"></div>
+          <div class="dot d4"></div>
+        </div>
+        <div class="status" id="status">Comparing knockdowns…</div>
+      </div>
+      <div class="idle-hint" id="idleHint">Drop a CSV, then find similar knockdowns.</div>
+      <div id="resultsBlock" class="hidden">
+        <div class="compare" id="compare"></div>
+        <div class="cand-pick" id="candPick"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const RECENT_KEY = "blood-jepa-recent-v1";
+const RECENT_MAX = 6;
+const ABN_ROWS = 6;
+let cell = null; // {genes, values}
+let cellLabel = "";
+let activeRecentId = null;
+let reference = null;
+let coldHintShown = false;
+let lastMatches = [];
+let lastAbnormal = [];
+let selectedMatchIdx = 0;
+
+function showErr(msg) {
+  const e = $("err");
+  e.textContent = msg || "";
+  e.classList.toggle("on", !!msg);
+}
+
+function loadRecent() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+    return Array.isArray(raw) ? raw : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveRecent(items) {
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(items.slice(0, RECENT_MAX)));
+  } catch (_) {
+    // localStorage full or blocked: keep UI working without persistence
+  }
+}
+
+function relativeTime(ts) {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function renderRecent() {
+  const items = loadRecent();
+  const list = $("recentList");
+  const empty = $("recentEmpty");
+  empty.style.display = items.length ? "none" : "block";
+  list.innerHTML = items.map((it) => `
+    <li>
+      <button type="button" class="recent-item ${it.id === activeRecentId ? "active" : ""}" data-id="${esc(it.id)}">
+        <span class="r-title">${esc(it.label)}</span>
+        <span class="r-meta">${it.nGenes.toLocaleString()} genes · ${relativeTime(it.ts)}</span>
+        ${it.topHit ? `<span class="r-hit">Top: ${esc(it.topHit)}</span>` : ""}
+      </button>
+    </li>
+  `).join("");
+}
+
+function rememberUpload(label, profile, topHit) {
+  const items = loadRecent().filter((it) => it.label !== label);
+  const id = `u_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  items.unshift({
+    id,
+    label,
+    ts: Date.now(),
+    nGenes: profile.genes.length,
+    genes: profile.genes,
+    values: profile.values,
+    topHit: topHit || null,
+  });
+  saveRecent(items);
+  activeRecentId = id;
+  renderRecent();
+  return id;
+}
+
+function updateRecentHit(topHit) {
+  if (!activeRecentId || !topHit) return;
+  const items = loadRecent();
+  const i = items.findIndex((it) => it.id === activeRecentId);
+  if (i < 0) return;
+  items[i].topHit = topHit;
+  saveRecent(items);
+  renderRecent();
+}
+
+function parseCsv(text) {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  if (!lines.length) throw new Error("empty CSV");
+  const start = /gene/i.test(lines[0]) ? 1 : 0;
+  const genes = [], values = [];
+  for (let i = start; i < lines.length; i++) {
+    const parts = lines[i].split(",").map((s) => s.trim());
+    if (parts.length < 2) continue;
+    const v = Number(parts[1]);
+    if (!Number.isFinite(v)) continue;
+    genes.push(parts[0]);
+    values.push(v);
+  }
+  if (!genes.length) throw new Error("no gene,value rows found");
+  return { genes, values };
+}
+
+function setCell(next, label, opts = {}) {
+  cell = next;
+  cellLabel = label || "Uploaded";
+  $("run").disabled = !cell;
+  $("uploadMeta").textContent = cell
+    ? `${cellLabel} · ${cell.genes.length.toLocaleString()} genes`
+    : "";
+  showErr("");
+  setStageMode("idle");
+  if (cell && reference) renderAbnormal(cell);
+  else {
+    $("abn").innerHTML = "";
+    $("abnPanel").classList.remove("on");
+  }
+  if (cell && !opts.skipHistory) {
+    rememberUpload(cellLabel, cell);
+  } else if (opts.recentId) {
+    activeRecentId = opts.recentId;
+    renderRecent();
+  }
+}
+
+function deltaBarsHtml(rows, lim) {
+  const scale = lim || Math.max(...rows.map((d) => Math.abs(d.delta)), 1e-6);
+  return rows.map((d) => {
+    const up = d.delta >= 0;
+    const pct = Math.max(4, (Math.abs(d.delta) / scale) * 50);
+    const left = up ? 50 : 50 - pct;
+    return `<div class="align-row">
+      <div class="name" title="${esc(d.gene)}">${esc(d.gene)}</div>
+      <div class="track">
+        <div class="fill ${up ? "up" : "down"}" style="left:${left}%;width:${pct}%"></div>
+      </div>
+      <div class="val ${up ? "up" : "down"}">${d.delta >= 0 ? "+" : ""}${d.delta.toFixed(2)}</div>
+    </div>`;
+  }).join("");
+}
+
+function paintAbnormal(rows) {
+  lastAbnormal = rows || [];
+  const top = lastAbnormal.slice(0, ABN_ROWS);
+  const resultsOpen = !$("resultsBlock").classList.contains("hidden");
+  // Under-upload chart is only a pre-run preview; comparison owns the view after infer.
+  if (!resultsOpen) {
+    $("abn").innerHTML = deltaBarsHtml(top);
+    $("abnPanel").classList.toggle("on", top.length > 0);
+  } else {
+    $("abnPanel").classList.remove("on");
+  }
+}
+
+function renderAbnormal(c) {
+  const idx = Object.fromEntries(c.genes.map((g, i) => [g, i]));
+  const deltas = reference.genes.map((g, i) => {
+    const q = idx[g] === undefined ? 0 : c.values[idx[g]];
+    return { gene: g, delta: q - reference.values[i] };
+  });
+  deltas.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  paintAbnormal(deltas);
+}
+
+const UNIPROT = {
+  FARSB: "Q9NSD9", DNAJC19: "Q96DA6", DHDDS: "Q9NY69", SAMM50: "Q9Y512",
+  EIF2B4: "Q9UI10", TRAPPC6A: "O75865", MDK: "P21741", PHGDH: "O43175",
+  HBZ: "P02008", HBA1: "P69905", MYC: "P01106", TP53: "P04637",
+};
+const uniprotCache = { ...UNIPROT };
+const geneInfoCache = {};
+const structureViewers = [];
+
+async function resolveUniprot(gene) {
+  const key = String(gene || "").toUpperCase();
+  if (uniprotCache[key]) return uniprotCache[key];
+  const url = "https://rest.uniprot.org/uniprotkb/search?query=" +
+    encodeURIComponent(`gene_exact:${key} AND organism_id:9606 AND reviewed:true`) +
+    "&fields=accession&size=1&format=json";
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`UniProt lookup failed (${res.status})`);
+  const data = await res.json();
+  const acc = data.results && data.results[0] && data.results[0].primaryAccession;
+  if (!acc) throw new Error(`No reviewed UniProt entry for ${key}`);
+  uniprotCache[key] = acc;
+  return acc;
+}
+
+function firstSentence(text) {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  const m = t.match(/^.*?[.!?](?=\s|$)/);
+  return (m ? m[0] : t).slice(0, 140);
+}
+
+async function fetchGeneInfo(gene) {
+  const key = String(gene || "").toUpperCase();
+  if (geneInfoCache[key]) return geneInfoCache[key];
+  const accession = await resolveUniprot(key);
+  const res = await fetch(
+    `https://rest.uniprot.org/uniprotkb/${accession}.json?fields=accession,protein_name,gene_names,cc_function,cc_subcellular_location,cc_disease,length`
+  );
+  if (!res.ok) throw new Error(`UniProt details ${res.status}`);
+  const entry = await res.json();
+  const rec = entry.proteinDescription && entry.proteinDescription.recommendedName;
+  const proteinName = (rec && rec.fullName && rec.fullName.value) || key;
+  const genes = (entry.genes || []).flatMap((g) => {
+    const out = [];
+    if (g.geneName && g.geneName.value) out.push(g.geneName.value);
+    for (const a of g.synonyms || []) if (a.value) out.push(a.value);
+    return out;
+  });
+  const aliases = genes.filter((g) => g.toUpperCase() !== key).slice(0, 3);
+  const comments = entry.comments || [];
+  const functionText = comments.filter((c) => c.commentType === "FUNCTION")
+    .flatMap((c) => (c.texts || []).map((t) => t.value)).join(" ");
+  const locations = comments.filter((c) => c.commentType === "SUBCELLULAR LOCATION")
+    .flatMap((c) => (c.subcellularLocations || []).map((s) => s.location && s.location.value))
+    .filter(Boolean)
+    .slice(0, 2);
+  const diseases = comments.filter((c) => c.commentType === "DISEASE")
+    .map((c) => c.disease && c.disease.diseaseId)
+    .filter(Boolean)
+    .slice(0, 2);
+  const info = {
+    accession,
+    proteinName,
+    aliases,
+    function: firstSentence(functionText),
+    locations,
+    diseases,
+    length: entry.sequence && entry.sequence.length,
+  };
+  geneInfoCache[key] = info;
+  return info;
+}
+
+async function ensureMolstar() {
+  if (typeof molstar === "undefined") throw new Error("Mol* failed to load");
+}
+
+async function clearStructures() {
+  for (const v of structureViewers) {
+    try { await v.plugin.clear(); } catch (_) {}
+  }
+  structureViewers.length = 0;
+}
+
+async function showAlphaFold(gene, mountId, captionId, panelId) {
+  const caption = $(captionId);
+  const panel = $(panelId);
+  const mount = $(mountId);
+  if (panel) panel.classList.remove("on");
+  if (caption) caption.textContent = `Loading structure for ${gene}…`;
+  await ensureMolstar();
+  const accession = await resolveUniprot(gene);
+  const af = await fetch("https://alphafold.ebi.ac.uk/api/prediction/" + accession);
+  if (!af.ok) throw new Error(`AlphaFold DB ${af.status}`);
+  const entry = (await af.json())[0];
+  if (!entry) throw new Error("No AlphaFold model");
+
+  if (panel) panel.classList.add("on");
+  if (mount) mount.innerHTML = "";
+  const viewer = await molstar.Viewer.create(mountId, {
+    layoutIsExpanded: false,
+    layoutShowControls: false,
+    viewportShowAnimation: false,
+    viewportShowSelectionMode: false,
+  });
+  structureViewers.push(viewer);
+  await viewer.loadStructureFromUrl(entry.bcifUrl, "mmcif", true, {
+    representationParams: { theme: { globalName: "plddt-confidence" } },
+    label: entry.modelEntityId,
+  });
+  const plddt = Number(entry.globalMetricValue || 0).toFixed(1);
+  if (caption) caption.textContent = `Predicted structure · mean confidence ${plddt}`;
+}
+
+async function fillGenePanel(gene, ids) {
+  const nameEl = $(ids.name);
+  const blurbEl = $(ids.blurb);
+  const factsEl = $(ids.facts);
+  const linksEl = $(ids.links);
+  try {
+    const info = await fetchGeneInfo(gene);
+    if (nameEl) nameEl.textContent = info.proteinName;
+    if (blurbEl) blurbEl.textContent = info.function || "No function summary available.";
+    if (factsEl) {
+      const chips = [];
+      if (info.length) chips.push(`${info.length} aa`);
+      for (const loc of info.locations) chips.push(loc);
+      for (const d of info.diseases) chips.push(d);
+      for (const a of info.aliases) chips.push(a);
+      factsEl.innerHTML = chips.slice(0, 3).map((c) => `<span class="fact">${esc(c)}</span>`).join("");
+    }
+    if (linksEl) {
+      const gc = `https://www.genecards.org/cgi-bin/carddisp.pl?gene=${encodeURIComponent(gene)}`;
+      const up = `https://www.uniprot.org/uniprotkb/${encodeURIComponent(info.accession)}`;
+      linksEl.innerHTML =
+        `<a href="${gc}" target="_blank" rel="noopener">GeneCards</a>` +
+        `<a href="${up}" target="_blank" rel="noopener">UniProt</a>`;
+    }
+  } catch (err) {
+    if (nameEl) nameEl.textContent = "";
+    if (blurbEl) blurbEl.textContent = "Could not load gene summary.";
+    if (linksEl) {
+      const gc = `https://www.genecards.org/cgi-bin/carddisp.pl?gene=${encodeURIComponent(gene)}`;
+      linksEl.innerHTML = `<a href="${gc}" target="_blank" rel="noopener">GeneCards</a>`;
+    }
+  }
+}
+
+function alignedCompareRows(queryRows, matchDeltas) {
+  const qMap = Object.fromEntries((queryRows || []).map((d) => [d.gene, d.delta]));
+  const mMap = Object.fromEntries((matchDeltas || []).map((d) => [d.gene, d.delta]));
+  // Same gene rows for upload vs candidate so the signatures line up.
+  const genes = [];
+  for (const d of (queryRows || []).slice(0, ABN_ROWS)) {
+    if (!genes.includes(d.gene)) genes.push(d.gene);
+  }
+  for (const d of (matchDeltas || [])) {
+    if (genes.length >= ABN_ROWS) break;
+    if (!genes.includes(d.gene)) genes.push(d.gene);
+  }
+  const rows = genes.map((g) => ({
+    gene: g,
+    left: qMap[g] ?? null,
+    right: mMap[g] ?? null,
+  }));
+  const magnitudes = rows.flatMap((d) => [d.left, d.right].filter((v) => v != null).map((v) => Math.abs(v)));
+  const lim = Math.max(...magnitudes, 1e-6);
+  return { rows, lim };
+}
+
+function dualDeltaHtml(rows, lim) {
+  const scale = lim || 1e-6;
+  const cell = (delta) => {
+    if (delta == null) {
+      return `<div class="dual-cell"><div style="height:14px"></div><div class="val"></div></div>`;
+    }
+    const up = delta >= 0;
+    const pct = Math.max(4, (Math.abs(delta) / scale) * 50);
+    const left = up ? 50 : 50 - pct;
+    return `<div class="dual-cell">
+      <div class="track">
+        <div class="fill ${up ? "up" : "down"}" style="left:${left}%;width:${pct}%"></div>
+      </div>
+      <div class="val ${up ? "up" : "down"}">${delta >= 0 ? "+" : ""}${delta.toFixed(2)}</div>
+    </div>`;
+  };
+  return rows.map((d) => `
+    <div class="dual-row">
+      <div class="name" title="${esc(d.gene)}">${esc(d.gene)}</div>
+      ${cell(d.left)}
+      ${cell(d.right)}
+    </div>`).join("");
+}
+
+function renderCandidatePicker() {
+  const host = $("candPick");
+  const top = lastMatches.slice(0, 3);
+  const rest = lastMatches.slice(3);
+  const topHtml = top.map((m, i) => {
+    const w = Math.round((m.weight || 0) * 1000) / 10;
+    return `<button type="button" class="cand-card ${i === selectedMatchIdx ? "active" : ""}" data-idx="${i}">
+      <span class="c-gene">#${i + 1} ${esc(m.gene)}</span>
+      <span class="c-meta">${w}% · ${Number(m.cosine).toFixed(3)}</span>
+    </button>`;
+  }).join("");
+  const restHtml = rest.length
+    ? `<ul class="cand-list">${rest.map((m, j) => {
+        const i = j + 3;
+        const w = Math.round((m.weight || 0) * 1000) / 10;
+        return `<li><button type="button" class="cand-row ${i === selectedMatchIdx ? "active" : ""}" data-idx="${i}">
+          <span class="rank">#${i + 1}</span>
+          <span><span class="c-gene">${esc(m.gene)}</span>
+          <span class="c-meta">${w}%</span></span>
+        </button></li>`;
+      }).join("")}</ul>`
+    : "";
+  host.innerHTML = `<h3>Candidates</h3><div class="cand-top">${topHtml}</div>${restHtml}`;
+}
+
+async function selectMatch(idx) {
+  if (!lastMatches[idx]) return;
+  selectedMatchIdx = idx;
+  renderCandidatePicker();
+  await renderCompare();
+}
+
+async function renderCompare() {
+  const m = lastMatches[selectedMatchIdx];
+  if (!m) return;
+  const host = $("compare");
+  const w = Math.round((m.weight || 0) * 1000) / 10;
+  const { rows, lim } = alignedCompareRows(lastAbnormal, m.deltas || []);
+  await clearStructures();
+  host.innerHTML = `
+    <div class="compare-top">
+      <div class="compare-pane candidate">
+        <p class="pane-label">Knockdown candidate</p>
+        <p class="gene">${esc(m.gene)}</p>
+        <p class="protein-name" id="cmpName"></p>
+        <div class="meta">${w}% weight · cos ${Number(m.cosine).toFixed(3)}</div>
+        <div class="gene-links" id="cmpLinks"></div>
+        <p class="blurb" id="cmpBlurb">Loading gene summary…</p>
+        <div class="facts" id="cmpFacts"></div>
+        <div class="weight"><span style="width:${Math.max(w, 1)}%"></span></div>
+      </div>
+      <div class="compare-pane struct">
+        <p class="pane-label">Predicted structure</p>
+        <div class="structure-caption" id="afCaption">Checking predicted structure…</div>
+        <div class="structure-panel" id="afPanel">
+          <div class="structure-view" id="afViewer" role="region" aria-label="Predicted structure for ${esc(m.gene)}"></div>
+        </div>
+      </div>
+    </div>
+    <div class="compare-pane">
+      <p class="pane-label">Aligned abnormalities</p>
+      <div class="dual-head">
+        <span>Gene</span>
+        <span class="h-left">Your upload</span>
+        <span class="h-right">${esc(m.gene)}</span>
+      </div>
+      <div class="align-bars">${dualDeltaHtml(rows, lim)}</div>
+    </div>`;
+  fillGenePanel(m.gene, {
+    name: "cmpName",
+    blurb: "cmpBlurb",
+    facts: "cmpFacts",
+    links: "cmpLinks",
+  });
+  showAlphaFold(m.gene, "afViewer", "afCaption", "afPanel").catch(() => {
+    const panel = $("afPanel");
+    const cap = $("afCaption");
+    if (panel) panel.classList.remove("on");
+    if (cap) cap.textContent = "No AlphaFold structure available for this gene.";
+  });
+}
+
+function setStageMode(mode) {
+  const stage = $("stage");
+  const idle = $("idleHint");
+  const results = $("resultsBlock");
+  const loader = $("loader");
+  stage.classList.toggle("has-results", mode === "results");
+  loader.classList.toggle("on", mode === "loading");
+  if (idle) idle.classList.toggle("hidden", mode !== "idle");
+  if (mode === "results") results.classList.remove("hidden");
+  else results.classList.add("hidden");
+}
+
+function renderMatches(payload) {
+  lastMatches = payload.matches || [];
+  if (payload.abnormal && payload.abnormal.length) {
+    lastAbnormal = payload.abnormal;
+  }
+  selectedMatchIdx = 0;
+  $("abnPanel").classList.remove("on");
+  setStageMode("results");
+  renderCandidatePicker();
+  renderCompare();
+}
+
+async function loadBootstrap() {
+  // Wake the GPU worker before fetching large JSON (avoids Modal cold-start 303 → GET).
+  await fetch("/api/health").catch(() => {});
+  const refRes = await fetch("/api/reference");
+  if (!refRes.ok) throw new Error(`reference failed (${refRes.status})`);
+  reference = await refRes.json();
+  renderRecent();
+}
+
+$("recentList").addEventListener("click", (ev) => {
+  const btn = ev.target.closest(".recent-item");
+  if (!btn) return;
+  const item = loadRecent().find((it) => it.id === btn.dataset.id);
+  if (!item) return;
+  setCell(
+    { genes: item.genes, values: item.values },
+    item.label,
+    { skipHistory: true, recentId: item.id },
+  );
+});
+
+$("clearRecent").addEventListener("click", () => {
+  saveRecent([]);
+  activeRecentId = null;
+  renderRecent();
+});
+
+$("candPick").addEventListener("click", (ev) => {
+  const btn = ev.target.closest("[data-idx]");
+  if (!btn) return;
+  const idx = Number(btn.dataset.idx);
+  if (!Number.isFinite(idx)) return;
+  selectMatch(idx);
+});
+
+$("file").addEventListener("change", async (ev) => {
+  const f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  try {
+    setCell(parseCsv(await f.text()), f.name);
+  } catch (err) {
+    showErr(err.message || String(err));
+  }
+});
+
+const drop = $("drop");
+drop.addEventListener("dragover", (ev) => { ev.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", async (ev) => {
+  ev.preventDefault();
+  drop.classList.remove("over");
+  const f = ev.dataTransfer.files && ev.dataTransfer.files[0];
+  if (!f) return;
+  try {
+    setCell(parseCsv(await f.text()), f.name);
+  } catch (err) {
+    showErr(err.message || String(err));
+  }
+});
+
+$("run").addEventListener("click", async () => {
+  if (!cell) return;
+  showErr("");
+  $("abnPanel").classList.remove("on");
+  setStageMode("loading");
+  $("run").disabled = true;
+  const t0 = performance.now();
+  $("status").textContent = coldHintShown ? "Comparing knockdowns…" : "Starting the model (cold start can take a minute)…";
+  const timer = setInterval(() => {
+    const s = (performance.now() - t0) / 1000;
+    if (s > 8 && !coldHintShown) {
+      $("status").textContent = "Starting the model… still waking the GPU";
+    } else if (s > 3 && coldHintShown) {
+      $("status").textContent = "Comparing knockdowns…";
+    }
+  }, 500);
+  try {
+    // Warm the GPU container first. Modal cold starts answer with a 303; browsers
+    // convert that follow-up to GET and drop the POST body.
+    await fetch("/api/health").catch(() => {});
+    $("status").textContent = "Comparing knockdowns…";
+    const res = await fetch("/api/infer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ genes: cell.genes, values: cell.values, top_k: 8 }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = body.detail;
+      const msg = typeof detail === "string" ? detail
+        : Array.isArray(detail) ? detail.map((d) => d.msg || JSON.stringify(d)).join("; ")
+        : body.message || `infer failed (${res.status})`;
+      throw new Error(msg);
+    }
+    coldHintShown = true;
+    if (body.abnormal && body.abnormal.length) {
+      lastAbnormal = body.abnormal;
+    }
+    renderMatches(body);
+    const top = body.matches && body.matches[0] && body.matches[0].gene;
+    updateRecentHit(top);
+  } catch (err) {
+    showErr(err.message || String(err));
+    setStageMode("idle");
+    if (cell && reference) renderAbnormal(cell);
+  } finally {
+    clearInterval(timer);
+    $("loader").classList.remove("on");
+    $("run").disabled = !cell;
+  }
+});
+
+loadBootstrap().catch((err) => showErr("Failed to load demo data: " + (err.message || err)));
+</script>
+</body>
+</html>
